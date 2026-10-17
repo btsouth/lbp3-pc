@@ -899,6 +899,12 @@ void Runtime::FlushBarriers() {
     }
 
     scheduler.EndRendering();
+    // bbport: thousands of image barriers at once (Ratchet & Clank's large texture sets) do not
+    // fit a recording chunk: recorded on this thread's command buffer instead.
+    if (scheduler.IsRecordingDeferred() &&
+        image_barriers.size() * sizeof(vk::ImageMemoryBarrier2) > 64 * 1024) {
+        scheduler.CommandBuffer().pipelineBarrier2(dep_info);
+    } else
     scheduler.Record([memory = memory_barrier, has_memory = dep_info.memoryBarrierCount != 0,
                       images = scheduler.RecordData(std::span<const vk::ImageMemoryBarrier2>(
                           image_barriers.data(), image_barriers.size()))](vk::CommandBuffer cmdbuf) {
