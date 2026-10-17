@@ -123,7 +123,8 @@ static GpuRange hook_map, hook_unmap, hook_invalidate;
 static GpuRange hook_note_write; /* bbport: data written into GPU memory (runtime_memory_note_write) */
 enum { HOOK_MAP, HOOK_UNMAP, HOOK_INVALIDATE };
 typedef struct { int kind; uintptr_t address; uint64_t size; } PendingHook;
-static PendingHook pending[64]; static size_t pending_count;
+/* One per mapping change made under the lock; sceKernelBatchMap makes hundreds at once. */
+static PendingHook pending[8192]; static size_t pending_count;
 static size_t allocations, maps, flexible_maps, protects, queries;
 static uint64_t live_bytes, flexible_bytes;
 
