@@ -319,6 +319,16 @@ static ABI int32_t thread_set_prio(GuestThread *t,int prio) {
     if (!find_thread(t)) return ERR(3);
     t->attr.prio=prio; return 0;
 }
+static ABI int32_t thread_get_sched(GuestThread *t,int *policy,int *param) {
+    if (!find_thread(t)) return ERR(3);
+    if (!policy || !param) return ERR(22);
+    *policy=t->attr.policy; *param=t->attr.prio; return 0;
+}
+static ABI int32_t thread_set_sched(GuestThread *t,int policy,const int *param) {
+    if (!find_thread(t)) return ERR(3);
+    if (!param || policy<1 || policy>3) return ERR(22);
+    t->attr.policy=policy; t->attr.prio=*param; return 0;
+}
 static ABI int32_t thread_set_affinity(GuestThread *t,uint64_t mask) {
     if (!find_thread(t)) return ERR(3);
     t->attr.affinity=mask; return 0;
@@ -374,6 +384,7 @@ uintptr_t runtime_thread_resolve(const char *name) {
         {"6UgtwV+0zb4#p#J",thread_create}, {"onNY9Byn-W8#p#J",thread_join},
         {"4qGrR6eoP9Y#p#J",thread_detach}, {"3kg7rT0NQIs#p#J",thread_exit},
         {"T72hz6ffq08#p#J",thread_yield}, {"1tKyG7RlMJo#p#J",thread_get_prio},
+        {"P41kTWUS3EI#p#J",thread_get_sched}, {"oIRFTjoILbg#p#J",thread_set_sched},
         {"W0Hpm2X0uPE#p#J",thread_set_prio}, {"bt3CTBKmGyI#p#J",thread_set_affinity}, {"rcrVFJsQWRY#p#J",thread_get_affinity},
         {"GBUY7ywdULE#p#J",thread_rename}, {"3PtV6p3QNX4#p#J",thread_equal},
         {"wtkt-teR1so#I#J",posix_attr_init}, {"zHchY8ft5pk#I#J",posix_attr_destroy},

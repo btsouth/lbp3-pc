@@ -179,3 +179,7 @@
 {"hay1CfTmLyA","sceSaveDataDialogProgressBarSetValue"},
 {"ERKzksauAJA","sceSaveDataDialogGetStatus"},
 {"V-uEeFKARJU","sceSaveDataDialogProgressBarInc"},
+
+{"LHuSmO3SLd8","sceNpTrophyGetTrophyUnlockState"},
+{"P41kTWUS3EI","scePthreadGetschedparam"},
+{"oIRFTjoILbg","scePthreadSetschedparam"},

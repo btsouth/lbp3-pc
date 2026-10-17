@@ -405,6 +405,7 @@ static ABI int32_t ime_result(uint32_t *result) {
 static ABI int32_t ime_term(void) { memset(&ime,0,sizeof(ime)); return 0; }
 
 /* ---- Trophies: accepted locally, recorded in the log ---- */
+static uint32_t trophy_flags[4];
 static ABI int32_t trophy_context(int32_t *ctx,int32_t user,uint32_t label,uint64_t options) {
     (void)user; (void)label; (void)options;
     if (!ctx) return TROPHY_INVALID;
@@ -414,9 +415,20 @@ static ABI int32_t trophy_handle(int32_t *handle) { if (!handle) return TROPHY_I
 static ABI int32_t trophy_register(int32_t ctx,int32_t handle,uint64_t options) { (void)ctx; (void)handle; (void)options; return 0; }
 static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *platinum) {
     (void)ctx; (void)handle;
+    if (id<0 || id>=128) return TROPHY_INVALID;
+    pthread_mutex_lock(&lock); trophy_flags[id/32]|=UINT32_C(1)<<(id%32); pthread_mutex_unlock(&lock);
     printf("Runtime: trophy %d unlocked\n",id);
     if (platinum) *platinum=-1;
     return 0;
+}
+static ABI int32_t trophy_unlock_state(int32_t ctx,int32_t handle,uint32_t *flags,uint32_t *count) {
+    (void)ctx; (void)handle;
+    if (!flags || !count) return TROPHY_INVALID;
+    pthread_mutex_lock(&lock);
+    memcpy(flags,trophy_flags,sizeof(trophy_flags));
+    *count=0;
+    for (int i=0;i<4;++i) *count+=(uint32_t)__builtin_popcount(trophy_flags[i]);
+    pthread_mutex_unlock(&lock); return 0;
 }
 static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,void *data) {
     (void)ctx; (void)handle;
@@ -635,6 +647,7 @@ static const RuntimeExport exports[]={
     {"sceImeDialogTerm",ime_term}, {"sceImeDialogAbort",ime_term},
     {"sceNpTrophyCreateContext",trophy_context}, {"sceNpTrophyCreateHandle",trophy_handle},
     {"sceNpTrophyRegisterContext",trophy_register}, {"sceNpTrophyUnlockTrophy",trophy_unlock},
+    {"sceNpTrophyGetTrophyUnlockState",trophy_unlock_state},
     {"sceNpTrophyGetGameInfo",trophy_game_info}, {"sceNpTrophyGetTrophyInfo",trophy_info},
     {"scePlayGoInitialize",playgo_init}, {"scePlayGoOpen",playgo_open}, {"scePlayGoGetChunkId",playgo_chunk_ids},
     {"scePlayGoGetLocus",playgo_locus}, {"scePlayGoSetInstallSpeed",playgo_speed},
