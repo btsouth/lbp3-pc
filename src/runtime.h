@@ -45,6 +45,8 @@ void runtime_set_main_tls(const void *data, uint64_t filesz, uint64_t memsz, uin
 void runtime_thread_attach_main(void);
 int32_t *runtime_errno(void);
 uintptr_t runtime_sema_resolve(const char *name);
+uintptr_t runtime_evf_resolve(const char *name);
+void runtime_evf_report(void);
 void runtime_sema_report(void);
 unsigned runtime_sema_waiters(uint32_t id);
 uintptr_t runtime_time_resolve(const char *name);
