@@ -75,6 +75,26 @@ static ABI int32_t camera_fail(void) { return CAMERA_NOT_CONNECTED; }
 static ABI int32_t stream_status(void *status) { if (status) memset(status,0,16); return 0; }
 static ABI int32_t stream_messages(void *p1,uint32_t *count) { (void)p1; if (count) *count=0; return 0; }
 
+/* sceErrorDialog: the system error message is logged and counts as read and closed at once
+ * (status NONE 0, INITIALIZED 1, RUNNING 2, FINISHED 3). */
+static int32_t error_dialog_status;
+static ABI int32_t error_dialog_init(void) {
+    if (error_dialog_status) return (int32_t)0x80ED0002; /* ALREADY_INITIALIZED */
+    error_dialog_status=1; return 0;
+}
+static ABI int32_t error_dialog_open(const int32_t *param) { /* {size_t size; s32 errorCode; ...} */
+    if (error_dialog_status!=1 && error_dialog_status!=3) return (int32_t)0x80ED0003; /* INVALID_STATE */
+    if (!param) return (int32_t)0x80ED0005;
+    printf("Runtime: error dialog for %#x (closed at once)\n",(unsigned)param[2]);
+    error_dialog_status=3; return 0;
+}
+static ABI int32_t error_dialog_status_get(void) { return error_dialog_status; }
+static ABI int32_t error_dialog_close(void) { if (error_dialog_status==2) error_dialog_status=3; return 0; }
+static ABI int32_t error_dialog_term(void) {
+    if (!error_dialog_status) return (int32_t)0x80ED0001; /* NOT_INITIALIZED */
+    error_dialog_status=0; return 0;
+}
+
 /* POSIX sockets: no network, as a console that is offline (ENETDOWN). */
 static ABI int32_t socket_offline(void) { *runtime_errno()=50; return -1; }
 
@@ -100,6 +120,9 @@ static const RuntimeExport exports[]={
     {"sceGameLiveStreamingSetPresetSocialFeedbackCommandsDescription",posix_ok},
     {"sceGameLiveStreamingGetSocialFeedbackMessagesCount",stream_messages},
     {"sceGameLiveStreamingGetSocialFeedbackMessages",stream_messages},
+    {"sceErrorDialogInitialize",error_dialog_init}, {"sceErrorDialogOpen",error_dialog_open},
+    {"sceErrorDialogUpdateStatus",error_dialog_status_get}, {"sceErrorDialogGetStatus",error_dialog_status_get},
+    {"sceErrorDialogClose",error_dialog_close}, {"sceErrorDialogTerminate",error_dialog_term},
     {"socket",socket_offline}, {"bind",socket_offline}, {"connect",socket_offline},
     {"send",socket_offline}, {"recv",socket_offline}, {"sendto",socket_offline},
     {"recvfrom",socket_offline}, {"setsockopt",socket_offline}, {"shutdown",socket_offline},
