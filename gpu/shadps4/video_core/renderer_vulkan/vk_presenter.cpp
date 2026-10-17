@@ -178,9 +178,11 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                             ? "signalled"
                             : "not signalled");
         }
-        std::printf("  swapchain: %u images, %s, acquire slot %u, image %u\n",
+        std::printf("  swapchain: %u images, %s, acquire slot %u (its last present: tick %llu), "
+                    "image %u\n",
                     swapchain.GetImageCount(), vk::to_string(swapchain.GetPresentMode()).c_str(),
-                    swapchain.GetFrameIndex(), swapchain.GetImageIndex());
+                    swapchain.GetFrameIndex(), (unsigned long long)swapchain.PendingAcquireWait(),
+                    swapchain.GetImageIndex());
         rasterizer->GetBufferCache().ReportArenaBinds();
         Breadcrumbs::ReportStuck("a GPU wait made no progress for 3 s");
     });
@@ -660,6 +662,11 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     }
 
+    // bbport: the slot's acquire semaphore is reused only once the GPU ran the present that
+    // waited for it (AcquireSlots).
+    if (const u64 tick = swapchain.PendingAcquireWait()) {
+        present_scheduler.Wait(tick);
+    }
     if (!swapchain.AcquireNextImage()) {
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
         if (!swapchain.AcquireNextImage()) {
@@ -801,6 +808,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
+    swapchain.NoteAcquireWait(scheduler.CurrentTick()); // this submission's tick
     scheduler.Flush(info);
 
     // Present to swapchain.

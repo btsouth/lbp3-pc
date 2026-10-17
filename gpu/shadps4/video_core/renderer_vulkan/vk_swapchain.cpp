@@ -300,6 +300,7 @@ void Swapchain::Destroy() {
 void Swapchain::RefreshSemaphores() {
     const vk::Device device = instance.GetDevice();
     image_acquired.resize(image_count);
+    acquire_slots.Reset(image_count); // the old ones were waited for (Destroy: device idle)
     present_ready.resize(image_count);
 
     for (vk::Semaphore& semaphore : image_acquired) {
