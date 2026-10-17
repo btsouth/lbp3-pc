@@ -185,6 +185,10 @@ static ABI int32_t netctl_nat(uint32_t *info) {
 static ABI int32_t lib_init_id(void) { return new_id(); }
 static ABI int32_t ok_void(void) { return 0; }
 static ABI int32_t http_fail(void) { return HTTP_NETWORK; }
+/* A connection or request setting read back: off. */
+static ABI int32_t http_flag_off(int32_t id,int32_t *value) { (void)id; if (value) *value=0; return 0; }
+/* The errno of the last failed transfer: the network is unreachable (ENETUNREACH). */
+static ABI int32_t http_last_errno(int32_t id,int32_t *value) { (void)id; if (value) *value=51; return 0; }
 /* Objects are created so setup code proceeds; any transfer fails as unplugged. */
 static ABI int32_t http_object(void) { return new_id(); }
 static ABI int32_t http_epoll(int32_t ctx,void **handle) {
@@ -546,6 +550,21 @@ static const RuntimeExport exports[]={
     {"sceHttpSetEpoll",ok_void}, {"sceHttpUnsetEpoll",ok_void}, {"sceHttpWaitRequest",http_wait},
     {"sceHttpGetStatusCode",http_fail}, {"sceHttpGetResponseContentLength",http_fail},
     {"sceHttpReadData",http_fail},
+    {"sceHttpCreateConnection",http_object}, {"sceHttpCreateRequest",http_object},
+    {"sceHttpCreateRequest2",http_object}, {"sceHttpCreateRequestWithURL2",http_object},
+    {"sceHttpAbortRequest",ok_void}, {"sceHttpAbortRequestForce",ok_void},
+    {"sceHttpSetAutoRedirect",ok_void}, {"sceHttpGetAutoRedirect",http_flag_off},
+    {"sceHttpSetCookieEnabled",ok_void}, {"sceHttpGetCookieEnabled",http_flag_off},
+    {"sceHttpSetAuthEnabled",ok_void}, {"sceHttpGetAuthEnabled",http_flag_off},
+    {"sceHttpSetSendTimeOut",ok_void}, {"sceHttpSetRecvTimeOut",ok_void},
+    {"sceHttpSetResolveTimeOut",ok_void}, {"sceHttpSetResolveRetry",ok_void},
+    {"sceHttpsSetSslCallback",ok_void}, {"sceHttpsLoadCert",ok_void}, {"sceHttpsUnloadCert",ok_void},
+    {"sceHttpSetRedirectCallback",ok_void}, {"sceHttpSetCookieSendCallback",ok_void},
+    {"sceHttpSetCookieRecvCallback",ok_void}, {"sceHttpSetAuthInfoCallback",ok_void},
+    {"sceHttpAddCookie",ok_void}, {"sceHttpCookieFlush",ok_void},
+    {"sceHttpRemoveRequestHeader",ok_void}, {"sceHttpGetLastErrno",http_last_errno},
+    {"sceHttpGetAllResponseHeaders",http_fail}, {"sceHttpParseResponseHeader",http_fail},
+    {"sceHttpParseStatusLine",http_fail},
     {"sceNpGetState",np_state}, {"sceNpGetOnlineId",np_get_online_id}, {"sceNpGetNpId",np_get_np_id}, {"sceNpGetAccountCountry",np_account_country},
     {"sceNpRegisterStateCallback",np_state_register}, {"sceNpUnregisterStateCallback",np_state_unregister},
     {"sceNpRegisterGamePresenceCallback",np_register_void}, {"sceNpRegisterPlusEventCallback",np_register},
