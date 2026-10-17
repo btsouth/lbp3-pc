@@ -24,6 +24,19 @@
 
 namespace VideoCore {
 
+namespace {
+/// bbport: the slices of a volume are layers to a 2D (array) view of it. A game rendering a 3D
+/// texture one slice at a time (LBP3's lighting volumes) asks for slice k as a target of k + 1
+/// layers: the volume was freed as "too small" and rebuilt layer by layer every frame.
+SubresourceExtent AvailableResources(const ImageInfo& image, const ImageInfo& requested) {
+    SubresourceExtent available = image.resources;
+    if (image.type == AmdGpu::ImageType::Color3D && requested.type != AmdGpu::ImageType::Color3D) {
+        available.layers = std::max(available.layers, image.size.depth);
+    }
+    return available;
+}
+} // namespace
+
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
 
@@ -706,7 +719,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
-        } else if (image_resolved.info.resources < info.resources) {
+        } else if (AvailableResources(image_resolved.info, info) < info.resources) {
             // The image was clearly picked up wrong.
             FreeImage(image_id);
             image_id = {};
