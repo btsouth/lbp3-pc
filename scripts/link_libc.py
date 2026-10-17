@@ -58,8 +58,10 @@ def module(path):
     for pos in range(0, len(table), 24):
         n, info, other, section, value, size = unpack('<IBBHQQ', table, pos)
         name = string(n)
+        # Some libc builds (Ratchet & Clank's) also carry plain local names such as
+        # __start__Ztext next to the NID#lib#mod ones; they are never imported or exported.
         symbols.append(dict(name=name, type=info & 15, binding=info >> 4, section=section,
-                            value=value, size=size, identity=identity(name) if name else None))
+                            value=value, size=size, identity=identity(name) if name.count('#') == 2 else None))
     relocations = []
     for ot, st in ((0x61000029, 0x6100002d), (0x6100002f, 0x61000031)):
         table = span(blob, tags[ot], tags[st])
