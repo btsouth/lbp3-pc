@@ -586,6 +586,17 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         std::printf("Guest memory: the layer's memory module binds the game's memory in place "
                     "(chunk buffers, no sparse arena for it; BB_LAYER_MEMORY=1)\n");
     }
+    while (ARENA_PAGE_BITS > MIN_ARENA_PAGE_BITS &&
+           (u64{2} << ARENA_PAGE_BITS) > instance.SparseAddressSpaceSize()) {
+        --ARENA_PAGE_BITS;
+    }
+    if (ARENA_PAGE_BITS != MAX_ARENA_PAGE_BITS) {
+        ARENA_PAGE_SIZE = u64{1} << ARENA_PAGE_BITS;
+        NUM_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - ARENA_PAGE_BITS);
+        std::printf("GPU: sparse address space %llu MiB: arenas of %llu MiB\n",
+                    (unsigned long long)(instance.SparseAddressSpaceSize() >> 20),
+                    (unsigned long long)(ARENA_PAGE_SIZE >> 20));
+    }
     const std::array<u32, 2> families = {instance.GetGraphicsQueueFamilyIndex(),
                                          instance.GetReadbackQueueFamilyIndex()};
     const bool shared = bool(instance.GetReadbackQueue()); // as Buffer creates the arenas

@@ -66,9 +66,14 @@ public:
 
 class BufferCache {
     static constexpr u64 ADDRESS_SPACE_BITS = 40;
-    static constexpr u64 ARENA_PAGE_BITS = 32;
-    static constexpr u64 ARENA_PAGE_SIZE = u64{1} << ARENA_PAGE_BITS;
-    static constexpr u64 NUM_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - ARENA_PAGE_BITS);
+    // bbport: arenas are 4 GiB sparse buffers where the device's sparse address space allows
+    // two of them (an arena grows to two pages), smaller otherwise (lavapipe: 2 GiB, 1 GiB pages).
+    static constexpr u64 MAX_ARENA_PAGE_BITS = 32;
+    static constexpr u64 MIN_ARENA_PAGE_BITS = 28;
+    static constexpr u64 MAX_NUM_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - MIN_ARENA_PAGE_BITS);
+    u64 ARENA_PAGE_BITS = MAX_ARENA_PAGE_BITS;
+    u64 ARENA_PAGE_SIZE = u64{1} << MAX_ARENA_PAGE_BITS;
+    u64 NUM_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - MAX_ARENA_PAGE_BITS);
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
 
 public:
@@ -467,7 +472,7 @@ private:
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;
 
-    std::array<const Buffer*, NUM_ARENA_PAGES> address_space{};
+    std::array<const Buffer*, MAX_NUM_ARENA_PAGES> address_space{};
     std::deque<Buffer> arenas;
     std::vector<ArenaBinds> pending_binds;
     std::mutex preupload_mutex;               ///< the map hooks come from guest threads
