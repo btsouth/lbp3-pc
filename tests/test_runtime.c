@@ -4,6 +4,7 @@
 
 /* The settings menu of the GPU library restarts through probe.c, which tests do not link. */
 void runtime_restart(void) { abort(); }
+void runtime_guest_frames(uintptr_t a,uintptr_t b) { (void)a; (void)b; abort(); }
 #include <assert.h>
 #include <setjmp.h>
 #include <signal.h>

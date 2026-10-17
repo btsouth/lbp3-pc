@@ -10,6 +10,7 @@
 
 /* The settings menu of the GPU library restarts through probe.c, which tests do not link. */
 void runtime_restart(void) { abort(); }
+void runtime_guest_frames(uintptr_t a,uintptr_t b) { (void)a; (void)b; abort(); }
 
 /* Online play (BB_ONLINE=1): the game's network and PSN imports resolve to the online module
  * (out/gpu/libbbnet.so); trophies stay with the runtime. Without the module (a build without its
