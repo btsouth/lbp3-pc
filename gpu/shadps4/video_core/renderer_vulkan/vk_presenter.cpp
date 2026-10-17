@@ -389,6 +389,52 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
             runtime.FlushBarriers();
             upscaler.DumpPresented(image.GetImage(), image_size.width, image_size.height,
                                    view_info.format);
+            // bbport BB_DUMP_IMAGES=addr,... (diagnostics): the game's images at those addresses
+            // too (render targets as they stand at the flip), named by address and format.
+            static const std::vector<VAddr> extra = [] {
+                std::vector<VAddr> out;
+                for (const char* p = std::getenv("BB_DUMP_IMAGES"); p && *p;) {
+                    char* end = nullptr;
+                    out.push_back(std::strtoull(p, &end, 0));
+                    p = end && *end == ',' ? end + 1 : nullptr;
+                }
+                return out;
+            }();
+            static std::vector<std::string> names;
+            for (const VAddr address : extra) {
+                texture_cache.ForEachImageInRegion(address, 1, [&](VideoCore::ImageId,
+                                                                   VideoCore::Image& img) {
+                    if (img.info.guest_address != address) {
+                        return;
+                    }
+                    u32 bpp = 0;
+                    switch (img.info.pixel_format) {
+                    case vk::Format::eR8G8B8A8Unorm:
+                    case vk::Format::eR8G8B8A8Srgb:
+                    case vk::Format::eB8G8R8A8Unorm:
+                    case vk::Format::eB8G8R8A8Srgb:
+                    case vk::Format::eA2B10G10R10UnormPack32:
+                    case vk::Format::eB10G11R11UfloatPack32:
+                    case vk::Format::eR32Sfloat:
+                    case vk::Format::eR16G16Sfloat:
+                        bpp = 4;
+                        break;
+                    case vk::Format::eR16G16B16A16Sfloat:
+                        bpp = 8;
+                        break;
+                    default:
+                        return;
+                    }
+                    names.push_back(fmt::format("img{:x}_{}", address,
+                                                vk::to_string(img.info.pixel_format)));
+                    runtime.Transit(&img, vk::ImageLayout::eGeneral,
+                                    vk::PipelineStageFlagBits2::eTransfer,
+                                    vk::AccessFlagBits2::eTransferRead);
+                    runtime.FlushBarriers();
+                    upscaler.DumpGuestImage(img.GetImage(), img.info.size.width,
+                                            img.info.size.height, bpp, names.back().c_str());
+                });
+            }
         }
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
                         vk::PipelineStageFlagBits2::eFragmentShader,

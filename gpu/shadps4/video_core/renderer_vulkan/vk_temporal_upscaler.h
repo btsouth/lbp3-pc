@@ -130,6 +130,9 @@ public:
     bool PresentDumpDue();
     /// Saves `image` (General layout, 4 bytes a pixel) as present_<w>x<h> in BB_DUMP_DIR.
     void DumpPresented(vk::Image image, u32 width, u32 height, vk::Format format);
+    /// BB_DUMP_IMAGES: another image (in the general layout) beside the frame just dumped.
+    void DumpGuestImage(vk::Image image, u32 width, u32 height, u32 bytes_per_pixel,
+                        const char* name);
 
 private:
     /// bbport: views of guest images the upscaler reads, kept across frames: FSR 4 registers

@@ -2212,6 +2212,13 @@ bool TemporalUpscaler::PresentDumpDue() {
     return true;
 }
 
+void TemporalUpscaler::DumpGuestImage(vk::Image image, u32 width, u32 height,
+                                      u32 bytes_per_pixel, const char* name) {
+    scheduler.EndRendering();
+    DumpImages(instance, scheduler, scheduler.CommandBuffer(), present_dump_index - 1,
+               {{image, width, height, bytes_per_pixel, name, "raw"}});
+}
+
 void TemporalUpscaler::DumpPresented(vk::Image image, u32 width, u32 height, vk::Format format) {
     scheduler.EndRendering();
     const bool bgra = format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb;
