@@ -275,6 +275,24 @@ public:
         return vk13_features.subgroupSizeControl && vk13_props.maxSubgroupSize >= 64;
     }
 
+    /// bbport: the subgroup size to require for a `stage` shader, or 0 for none: 64 where the
+    /// device has it (as before), else the size the recompiler assumes (SubgroupSize(), its
+    /// Profile::subgroup_size) when the driver can be held to it. SPIR-V 1.6 otherwise lets the
+    /// driver pick any size from min to max (ANV: 8 to 32 under a reported 32), and wave
+    /// operations lowered for 32 lanes go wrong.
+    u32 SubgroupSizeToRequire(vk::ShaderStageFlagBits stage) const {
+        if (IsSubgroupSize64Supported()) {
+            return 64;
+        }
+        if (!vk13_features.subgroupSizeControl ||
+            !(vk13_props.requiredSubgroupSizeStages & stage)) {
+            return 0;
+        }
+        const u32 size = SubgroupSize();
+        return size >= vk13_props.minSubgroupSize && size <= vk13_props.maxSubgroupSize ? size
+                                                                                        : 0;
+    }
+
     /// Returns true when VK_KHR_workgroup_memory_explicit_layout is supported.
     bool IsWorkgroupMemoryExplicitLayoutSupported() const {
         return workgroup_memory_explicit_layout &&
