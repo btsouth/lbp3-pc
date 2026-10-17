@@ -196,7 +196,19 @@ GraphicsPipeline::GraphicsPipeline(
         const auto type = is_quad_list ? AuxShaderType::QuadListTCS : AuxShaderType::RectListTCS;
         if (!preloading) {
             const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
-            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, fs_info);
+            // bbport: the parameters the vertex shader writes; the TCS reads only those. With
+            // clip distance emulation the locations shift, so everything is read as before.
+            u64 vs_outputs = ~0ull;
+            if (const auto* vs = infos[u32(Shader::SwStage::Vertex)];
+                vs && !fs_info.clip_distance_emulation) {
+                vs_outputs = 0;
+                for (u32 i = 0; i < Shader::IR::NumParams && i < 64; ++i) {
+                    if (vs->stores.GetAny(Shader::IR::Attribute::Param0 + i)) {
+                        vs_outputs |= 1ull << i;
+                    }
+                }
+            }
+            sdata.tcs = Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, fs_info, vs_outputs);
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationControl,
