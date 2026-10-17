@@ -623,8 +623,26 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             // frame with dozens of new pipelines then costs the longest chain, not their sum
             // (LBP3 stopped itself at its 1 s flip watchdog after ~0.5 s of serial compiles).
             EnsureCompiler();
+            const auto queued = std::chrono::steady_clock::now();
             const GraphicsPipeline::Deferral deferral{
-                .submit = [this](std::function<void()> job) { compiler->Submit(std::move(job)); },
+                .submit =
+                    [this, queued, pipeline_hash](std::function<void()> job) {
+                        compiler->Submit([job = std::move(job), queued, pipeline_hash] {
+                            const auto start = std::chrono::steady_clock::now();
+                            job();
+                            const auto end = std::chrono::steady_clock::now();
+                            const auto ms = [](auto a, auto b) {
+                                return std::chrono::duration<double, std::milli>(b - a).count();
+                            };
+                            if (ShaderProfile() || ms(start, end) > 50.0) {
+                                std::printf("GPU: [%.3f] graphics pipeline %016llx built on a "
+                                            "worker: %.1f ms after %.1f ms queued\n",
+                                            ProfileSeconds(), (unsigned long long)pipeline_hash,
+                                            ms(start, end), ms(queued, start));
+                                std::fflush(stdout);
+                            }
+                        });
+                    },
                 .built =
                     [key = sel.graphics_key, pipeline_hash](
                         const GraphicsPipeline::SerializationSupport& built) {
