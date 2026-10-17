@@ -172,6 +172,8 @@ static ABI void guest_exit(void) { puts("Runtime: process finalizer callback rea
 static void fault(int sig, siginfo_t *info, void *context) {
     /* GPU page tracking (write-protected guest pages) is resolved first. */
     if (gpu_enabled && sig == SIGSEGV && bbgpu_handle_fault(context, info->si_addr)) return;
+    /* AMD-only SSE4a instructions on other CPUs (runtime_sse4a.c). */
+    if (sig == SIGILL && runtime_sse4a_fault(context)) return;
     /* A speculative guest memory read (runtime_memory.c) failed: resume its recovery point. */
     if ((sig == SIGSEGV || sig == SIGBUS) && runtime_fault_recover) {
         sigjmp_buf *recover = runtime_fault_recover;
@@ -529,6 +531,7 @@ int main(int argc, char **argv) {
         }
     }
     image = allocate(round_page(size));
+    runtime_sse4a_init((uintptr_t)image);
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
     if (!cpu_only) {
