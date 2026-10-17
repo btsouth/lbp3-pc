@@ -581,6 +581,17 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 }
 
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
+    // bbport BB_IMAGE_EXPAND_LOG=1: each image replaced by a larger one (first 64).
+    static const bool expand_log = std::getenv("BB_IMAGE_EXPAND_LOG") != nullptr;
+    if (static int logged = 0; expand_log && logged++ < 64) {
+        const auto& old = slot_images[image_id].info;
+        std::printf("Image expand: %#llx %s %ux%u layers %u->%u levels %u->%u type %d->%d "
+                    "size %llu->%llu\n",
+                    (unsigned long long)info.guest_address, vk::to_string(info.pixel_format).c_str(),
+                    info.size.width, info.size.height, old.resources.layers, info.resources.layers,
+                    old.resources.levels, info.resources.levels, int(old.type), int(info.type),
+                    (unsigned long long)old.guest_size, (unsigned long long)info.guest_size);
+    }
     const auto new_image_id = slot_images.insert(instance, runtime, slot_image_views, info);
     RegisterImage(new_image_id);
 
