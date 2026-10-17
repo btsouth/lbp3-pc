@@ -147,6 +147,9 @@ public:
             return;
         }
 
+        if constexpr (type == Type::CPU) {
+            RefreshHotPages();
+        }
         RegionBits& bits = GetRegionBits<type>();
         // bbport: nothing modified in the range means nothing to clear or re-protect (CPU bits
         // always match `writeable` after a change); this runs for every buffer binding, so
@@ -181,6 +184,9 @@ public:
     /// bbport: every page of the region modified.
     template <Type type>
     [[nodiscard]] bool IsRegionFullyModified(u64 offset, u64 size) noexcept {
+        if constexpr (type == Type::CPU) {
+            RefreshHotPages();
+        }
         const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
         const size_t end_page =
             Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
@@ -193,6 +199,9 @@ public:
     template <Type type>
     [[nodiscard]] bool IsRegionModified(u64 offset, u64 size) noexcept {
         RENDERER_TRACE;
+        if constexpr (type == Type::CPU) {
+            RefreshHotPages();
+        }
         const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
         const size_t end_page =
             Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
@@ -245,25 +254,28 @@ private:
     template <bool track, bool is_read>
     void UpdateProtection() {
         RENDERER_TRACE;
-        RegionBits mask = is_read ? (~gpu ^ readable) : (cpu ^ writeable);
+        // bbport: hot pages stay writable whether or not they are marked modified.
+        const RegionBits writable_target = num_hot ? (cpu | hot) : cpu;
+        RegionBits mask = is_read ? (~gpu ^ readable) : (writable_target ^ writeable);
         if (mask.None()) {
             return;
         }
         if constexpr (is_read) {
             readable = ~gpu;
         } else {
-            writeable = cpu;
+            writeable = writable_target;
         }
         tracker->UpdatePageWatchersForRegion<track, is_read>(cpu_addr, mask);
     }
 
     // bbport: pages the guest writes again and again (per-frame constants, skinning output)
     // cost a protection fault in the writing thread plus an mprotect with TLB shootdowns on
-    // every upload. After HotFaults faults a page stays writable and counts as always CPU
-    // modified, so it is uploaded on every use instead. The set is rebuilt every HotPeriod.
-    // Opt-in (BB_HOT_PAGES=1): in Hunter's Nightmare the set grew to ~14k pages (56 MB), each
-    // re-uploaded on every binding, which cost far more than the faults (33 FPS) and preceded
-    // a GPU ring timeout.
+    // every upload. After HotFaults faults a page stays writable and counts as CPU modified once
+    // per guest submission (upload_epoch), so the first use in each submission uploads it. The
+    // set is rebuilt every HotPeriod. Opt-in (BB_HOT_PAGES=1). Marked modified again right
+    // after every upload instead, it was re-uploaded on every binding: Ratchet & Clank binds its
+    // geometry ring whole, ~780 MB of uploads a frame from ~300 hot pages, half the frame rate;
+    // in Hunter's Nightmare the set grew to ~14k pages (56 MB), 33 FPS and a GPU ring timeout.
     static bool HotPagesEnabled() {
         static const bool enabled = [] {
             const char* env = std::getenv("BB_HOT_PAGES");
@@ -301,25 +313,42 @@ private:
         }
     }
 
+    /// A new guest submission since the hot pages were last marked: they may have been written
+    /// (they are writable), so they count as modified until uploaded again.
+    void RefreshHotPages() {
+        if (num_hot == 0) {
+            return;
+        }
+        const u64 epoch = BbStats::upload_epoch.load(std::memory_order_relaxed);
+        if (epoch == hot_epoch) {
+            return;
+        }
+        hot_epoch = epoch;
+        cpu |= hot;
+    }
+
     void KeepHotPagesModified(size_t start_page, size_t end_page) {
+        (void)start_page;
+        (void)end_page;
         if (num_hot == 0) {
             return;
         }
         if (!HotPagesEnabled() ||
             std::chrono::steady_clock::now() - hot_since > HotPeriod) {
-            // Re-protect them (on this upload) and start counting again.
+            // Writes since their last upload were not tracked: modified, so the next use uploads
+            // them and protects them again. Counting starts again.
+            cpu |= hot;
             BbStats::hot_pages.fetch_sub(num_hot, std::memory_order_relaxed);
             hot.Clear();
             write_faults.fill(0);
             num_hot = 0;
-            return;
         }
-        cpu |= RegionBits(hot, start_page, end_page);
     }
 
     std::array<u8, NUM_PAGES_PER_REGION> write_faults{};
     RegionBits hot{};
     u32 num_hot = 0;
+    u64 hot_epoch = 0; ///< upload_epoch when the hot pages were last marked modified
     std::chrono::steady_clock::time_point hot_since{};
 
     PageManager* tracker;

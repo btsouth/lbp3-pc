@@ -2198,6 +2198,7 @@ void Rasterizer::Finish() {
 
 void Rasterizer::OnSubmit() {
     DrainDrawPipe();
+    BbStats::upload_epoch.fetch_add(1, std::memory_order_relaxed);
     if (fault_process_pending) {
         fault_process_pending = false;
         buffer_cache.ProcessFaultBuffer();
