@@ -24,21 +24,27 @@ Pipeline::Pipeline(const Instance& instance_, Scheduler& scheduler_, DescriptorH
 Pipeline::~Pipeline() = default;
 
 std::atomic<u64> g_bb_pipeline_wait_ns;
+std::atomic<u64> g_bb_compile_stall_ns;
 
 void Pipeline::WaitHandle() const {
     const auto start = std::chrono::steady_clock::now();
     std::unique_lock lk{handle_mutex};
+    if (!handle_pending.load(std::memory_order_acquire)) {
+        return; // the destructor, after the build (the lock orders it after PublishHandle)
+    }
     handle_cv.wait(lk, [&] { return !handle_pending.load(std::memory_order_acquire); });
-    g_bb_pipeline_wait_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                     std::chrono::steady_clock::now() - start)
-                                     .count());
+    const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count());
+    g_bb_pipeline_wait_ns += ns;
+    g_bb_compile_stall_ns += ns;
 }
 
 void Pipeline::PublishHandle() {
-    {
-        std::scoped_lock lk{handle_mutex};
-        handle_pending.store(false, std::memory_order_release);
-    }
+    // Notified under the lock: a waiter (or the destructor) may free this object once it sees
+    // the handle published.
+    std::scoped_lock lk{handle_mutex};
+    handle_pending.store(false, std::memory_order_release);
     handle_cv.notify_all();
 }
 

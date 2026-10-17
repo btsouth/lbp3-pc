@@ -467,6 +467,7 @@ struct CompileTimer {
                                std::chrono::steady_clock::now() - start)
                                .count());
         g_bb_compile_ns += ns;
+        g_bb_compile_stall_ns += ns;
         ++g_bb_compiles;
         if (what && (ShaderProfile() || ns > 50'000'000)) {
             std::printf("GPU: [%.3f] %s pipeline %016llx on the GPU thread: %.1f ms\n",
@@ -590,9 +591,11 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                 // A pass that is not drawn every frame needs it now: the wait is compile time.
                 const auto start = std::chrono::steady_clock::now();
                 job->cv.wait(lk, [&] { return job->done; });
-                g_bb_compile_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                           std::chrono::steady_clock::now() - start)
-                                           .count());
+                const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                       std::chrono::steady_clock::now() - start)
+                                       .count());
+                g_bb_compile_ns += ns;
+                g_bb_compile_stall_ns += ns;
                 ++async_waited;
             }
         }
