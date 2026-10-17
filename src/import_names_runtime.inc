@@ -94,6 +94,7 @@
 {"gg1d4KsyVVs#runtime","sceMoveTrackerGetWorkingMemorySize"},
 {"F4w2atwG428#runtime","sceMoveTrackerInit"},
 {"3tiBWhkHH3A#runtime","sceMoveTrackerTerm"},
+{"Ghz9iWDUtC4#runtime","sceNpGetAccountCountry"},
 {"q1cHNfGycLI#runtime","scePadRead"},
 {"clVvL4ZDntw#runtime","scePadSetMotionSensorState"},
 {"Uco1I0dlDi8#runtime","scePlayGoClose"},

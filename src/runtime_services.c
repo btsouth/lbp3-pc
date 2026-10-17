@@ -177,10 +177,40 @@ static ABI int32_t http_wait(void *handle,void *events,int32_t max,int64_t timeo
 }
 
 /* ---- NP (PSN): signed out ---- */
+/* BB_NP_SIGNED_IN=1: user 1 is signed in to PSN (online ID: the user name) while every server
+ * request still fails, as on a console whose game servers are gone. Some games (LittleBigPlanet 3)
+ * only reach their offline fallback that way. Default: signed out. */
+static int np_signed_in(void) {
+    static int value=-1;
+    if (value<0) { const char *e=getenv("BB_NP_SIGNED_IN"); value=e && !strcmp(e,"1"); }
+    return value;
+}
+static void np_online_id(char *id) { /* SceNpOnlineId: 16 characters, terminator, 3 spare */
+    memset(id,0,20);
+    char name[32]="";
+    user_name(USER_ID,name,sizeof(name));
+    size_t n=strlen(name);
+    memcpy(id,name,n<16 ? n : 16);
+}
 static ABI int32_t np_state(int32_t user,int32_t *state) {
     if (!state) return NP_INVALID_ARGUMENT;
-    (void)user; *state=1; /* SIGNED_OUT */
+    (void)user; *state=np_signed_in() ? 2 : 1; /* SIGNED_IN : SIGNED_OUT */
     return 0;
+}
+static ABI int32_t np_get_online_id(int32_t user,char *id) {
+    if (!id) return NP_INVALID_ARGUMENT;
+    if (!np_signed_in()) return NP_SIGNED_OUT;
+    (void)user; np_online_id(id); return 0;
+}
+static ABI int32_t np_get_np_id(int32_t user,char *id) { /* SceNpId: online ID, opt 8, reserved 8 */
+    if (!id) return NP_INVALID_ARGUMENT;
+    if (!np_signed_in()) return NP_SIGNED_OUT;
+    (void)user; memset(id,0,36); np_online_id(id); return 0;
+}
+static ABI int32_t np_account_country(int32_t user,char *country) { /* SceNpCountryCode: 2 + NUL */
+    if (!country) return NP_INVALID_ARGUMENT;
+    if (!np_signed_in()) return NP_SIGNED_OUT;
+    (void)user; memset(country,0,4); memcpy(country,"us",2); return 0;
 }
 static ABI int32_t np_signed_out(void) { return NP_SIGNED_OUT; }
 /* sceNpRegisterStateCallback: the next sceNpCheckCallback reports user 1 signed out (state 1),
@@ -200,8 +230,10 @@ static ABI int32_t np_check_callback(void) {
     if (np_state_cb && !np_state_told) {
         static const unsigned char no_id[36];
         np_state_told=1;
-        printf("Runtime: NP state callback: user 1 signed out\n");
-        np_state_cb(1,1,no_id,np_state_arg);
+        static char id[36];
+        printf("Runtime: NP state callback: user 1 %s\n",np_signed_in() ? "signed in" : "signed out");
+        if (np_signed_in()) { np_get_np_id(USER_ID,id); np_state_cb(USER_ID,2,id,np_state_arg); }
+        else np_state_cb(USER_ID,1,no_id,np_state_arg);
     }
     return 0;
 }
@@ -476,7 +508,7 @@ static const RuntimeExport exports[]={
     {"sceHttpSetEpoll",ok_void}, {"sceHttpUnsetEpoll",ok_void}, {"sceHttpWaitRequest",http_wait},
     {"sceHttpGetStatusCode",http_fail}, {"sceHttpGetResponseContentLength",http_fail},
     {"sceHttpReadData",http_fail},
-    {"sceNpGetState",np_state}, {"sceNpGetOnlineId",np_signed_out}, {"sceNpGetNpId",np_signed_out},
+    {"sceNpGetState",np_state}, {"sceNpGetOnlineId",np_get_online_id}, {"sceNpGetNpId",np_get_np_id}, {"sceNpGetAccountCountry",np_account_country},
     {"sceNpRegisterStateCallback",np_state_register}, {"sceNpUnregisterStateCallback",np_state_unregister},
     {"sceNpRegisterGamePresenceCallback",np_register_void}, {"sceNpRegisterPlusEventCallback",np_register},
     {"sceNpUnregisterPlusEventCallback",ok_void}, {"sceNpCheckCallback",np_check_callback},
