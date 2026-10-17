@@ -313,12 +313,45 @@ def compile_external(selected, segments):
     return writes
 
 
+# Ratchet & Clank (2016), CUSA01073 1.00: the game paces its frames itself, every swap interval x
+# vblank period (2 x 1/59.94 s: 30 FPS) of its display object, a value set once at start
+# (vaddr 0x1722f6e: mov [r14+0x1c],eax from its configuration). The patch stores the preset's
+# interval there instead; its game logic follows the measured frame time. "uncap" (interval 0)
+# leaves pacing to the port (BB_FPS_LIMIT). The neighbouring store of the unused fallback
+# interval (only read when the flag set right after is clear) makes room for the constant.
+RATCHET_IDS={'CUSA01073'}
+RATCHET_FPS={'30':None,'60':1.0,'90':59.94/90,'120':59.94/120,'uncap':0.0}
+RATCHET_INTERVAL_SITE=0x1722f6e
+RATCHET_INTERVAL_CODE=bytes.fromhex('4189461c8b4628be080000004c89ff41894620')
+
+
+def ratchet_fps_writes(fps,eboot):
+    interval=RATCHET_FPS[fps]
+    if interval is None:
+        return []
+    phoff,=struct.unpack_from('<Q',eboot,0x20)
+    phentsize,phnum=struct.unpack_from('<HH',eboot,0x36)
+    file_offset=None
+    for i in range(phnum):
+        kind,_,off,vaddr,_,filesz,_,_=struct.unpack_from('<IIQQQQQQ',eboot,phoff+i*phentsize)
+        if kind==1 and vaddr<=RATCHET_INTERVAL_SITE<vaddr+filesz:
+            file_offset=off+RATCHET_INTERVAL_SITE-vaddr
+    if file_offset is None or eboot[file_offset:file_offset+len(RATCHET_INTERVAL_CODE)]!=RATCHET_INTERVAL_CODE:
+        print('Patches: this Ratchet & Clank executable differs from 1.00; frame rate left at 30')
+        return []
+    code=(bytes.fromhex('41c7461c')+struct.pack('<f',interval)  # mov dword [r14+0x1c],interval
+          +bytes.fromhex('6a085e')                               # push 8; pop rsi (mov esi,8)
+          +bytes.fromhex('4c89ff'))                              # mov rdi,r15
+    code+=b'\x90'*(len(RATCHET_INTERVAL_CODE)-len(code))
+    return [(RATCHET_INTERVAL_SITE,code)]
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--patches-dir',type=Path,help='third-party patch XML files (shadPS4 format)')
     p.add_argument('--patches-config',type=Path,help='patches.json: enabled/disabled external patches')
     p.add_argument('--xml',type=Path,default=Path(__file__).resolve().parent.parent/'patches/Bloodborne.xml')
-    p.add_argument('--fps',choices=sorted(FPS_PRESETS),default='uncap')
+    p.add_argument('--fps',choices=sorted(set(FPS_PRESETS)|set(RATCHET_FPS)),default='uncap')
     p.add_argument('--extra',default='',help='additional patch names, separated by ";"')
     p.add_argument('--app-version',default='01.09')
     p.add_argument('--out',type=Path,default=Path(__file__).resolve().parent.parent/'out')
@@ -345,6 +378,15 @@ def main():
         return
     # The built-in patches are Bloodborne 1.09 addresses: another game gets none of them.
     title=json.loads((a.out/'analysis.json').read_text(encoding='utf-8'))['sfo'].get('TITLE_ID','')
+    if title in RATCHET_IDS:
+        writes=ratchet_fps_writes(a.fps,(a.out/'eboot.elf').read_bytes())
+        blob=struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,len(writes))
+        for offset,data in writes: blob+=struct.pack('<QQ',offset,len(data))+data
+        (a.out/'patches.bin').write_bytes(blob)
+        print(f'Patches: Ratchet & Clank frame rate {a.fps}; {len(writes)} writes')
+        return
+    if a.fps not in FPS_PRESETS:
+        sys.exit(f'Patches: frame rate preset {a.fps} is not available for {title}')
     if title not in BLOODBORNE_IDS:
         (a.out/'patches.bin').write_bytes(struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,0))
         print(f'Patches: none ({title} is not Bloodborne)')
