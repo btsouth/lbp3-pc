@@ -75,6 +75,9 @@ static ABI int32_t camera_fail(void) { return CAMERA_NOT_CONNECTED; }
 static ABI int32_t stream_status(void *status) { if (status) memset(status,0,16); return 0; }
 static ABI int32_t stream_messages(void *p1,uint32_t *count) { (void)p1; if (count) *count=0; return 0; }
 
+/* POSIX sockets: no network, as a console that is offline (ENETDOWN). */
+static ABI int32_t socket_offline(void) { *runtime_errno()=50; return -1; }
+
 static const RuntimeExport exports[]={
     {"sceKernelLoadStartModule",load_start_module}, {"sceKernelStopUnloadModule",stop_unload_module},
     {"pthread_setschedparam",posix_ok}, {"sceKernelMlock",posix_ok},
@@ -97,6 +100,9 @@ static const RuntimeExport exports[]={
     {"sceGameLiveStreamingSetPresetSocialFeedbackCommandsDescription",posix_ok},
     {"sceGameLiveStreamingGetSocialFeedbackMessagesCount",stream_messages},
     {"sceGameLiveStreamingGetSocialFeedbackMessages",stream_messages},
+    {"socket",socket_offline}, {"bind",socket_offline}, {"connect",socket_offline},
+    {"send",socket_offline}, {"recv",socket_offline}, {"sendto",socket_offline},
+    {"recvfrom",socket_offline}, {"setsockopt",socket_offline}, {"shutdown",socket_offline},
 };
 uintptr_t runtime_misc_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
 #else
