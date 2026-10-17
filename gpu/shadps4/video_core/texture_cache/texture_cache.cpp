@@ -28,9 +28,12 @@ namespace {
 /// bbport: the slices of a volume are layers to a 2D (array) view of it. A game rendering a 3D
 /// texture one slice at a time (LBP3's lighting volumes) asks for slice k as a target of k + 1
 /// layers: the volume was freed as "too small" and rebuilt layer by layer every frame.
-SubresourceExtent AvailableResources(const ImageInfo& image, const ImageInfo& requested) {
+SubresourceExtent AvailableResources(const ImageInfo& image, const ImageInfo& requested,
+                                     TextureCache::BindingType binding) {
     SubresourceExtent available = image.resources;
-    if (image.type == AmdGpu::ImageType::Color3D && requested.type != AmdGpu::ImageType::Color3D) {
+    // Render targets only: a sampled 2D array view of a 3D image is not valid Vulkan.
+    if (binding == TextureCache::BindingType::RenderTarget &&
+        image.type == AmdGpu::ImageType::Color3D && requested.type != AmdGpu::ImageType::Color3D) {
         available.layers = std::max(available.layers, image.size.depth);
     }
     return available;
@@ -393,6 +396,15 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
+        // bbport: the last slice of a volume as a target of depth layers is the volume itself.
+        if (binding == BindingType::RenderTarget &&
+            cache_image.info.type == AmdGpu::ImageType::Color3D &&
+            image_info.type != AmdGpu::ImageType::Color3D &&
+            image_info.pixel_format == cache_image.info.pixel_format &&
+            image_info.resources.layers <= cache_image.info.size.depth &&
+            image_info.guest_size <= cache_image.info.guest_size) {
+            return {merged_image_id ? merged_image_id : cache_image_id, -1, -1};
+        }
         if (image_info.guest_size == cache_image.info.guest_size &&
             (image_info.type == AmdGpu::ImageType::Color3D ||
              cache_image.info.type == AmdGpu::ImageType::Color3D)) {
@@ -719,7 +731,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
-        } else if (AvailableResources(image_resolved.info, info) < info.resources) {
+        } else if (AvailableResources(image_resolved.info, info, desc.type) < info.resources) {
             // The image was clearly picked up wrong.
             FreeImage(image_id);
             image_id = {};

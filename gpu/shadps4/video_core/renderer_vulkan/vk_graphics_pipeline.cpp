@@ -471,9 +471,7 @@ void GraphicsPipeline::Build(vk::PipelineCache pipeline_cache,
 }
 
 GraphicsPipeline::~GraphicsPipeline() {
-    if (IsHandlePending()) {
-        WaitHandle(); // the worker still writes this object
-    }
+    WaitHandle(); // the worker may still write (or notify on) this object
 }
 
 template <typename Attribute, typename Binding>

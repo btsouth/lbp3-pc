@@ -35,10 +35,10 @@ void Pipeline::WaitHandle() const {
 }
 
 void Pipeline::PublishHandle() {
-    {
-        std::scoped_lock lk{handle_mutex};
-        handle_pending.store(false, std::memory_order_release);
-    }
+    // Notified under the lock: a waiter (or the destructor) may free this object once it sees
+    // the handle published.
+    std::scoped_lock lk{handle_mutex};
+    handle_pending.store(false, std::memory_order_release);
     handle_cv.notify_all();
 }
 
