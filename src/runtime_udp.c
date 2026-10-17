@@ -168,11 +168,12 @@ static ABI int ep_wait(int id,Event *out,int capacity,int timeout_us) {
     }
     return n;
 }
+static ABI int32_t *udp_errno(void) { return runtime_errno(); }
 static const RuntimeExport exports[]={
     {"socket",udp_socket},{"bind",udp_bind},{"connect",udp_connect},
     {"sendto",udp_sendto},{"send",udp_send},{"recvfrom",udp_recvfrom},{"recv",udp_recv},
     {"setsockopt",udp_option},{"getsockname",udp_name},{"shutdown",udp_shutdown},
-    {"sceNetEpollCreate",ep_create},{"sceNetEpollDestroy",ep_destroy},
+    {"sceNetErrnoLoc",udp_errno}, {"sceNetEpollCreate",ep_create},{"sceNetEpollDestroy",ep_destroy},
     {"sceNetEpollControl",ep_control},{"sceNetEpollWait",ep_wait},
 };
 uintptr_t runtime_udp_resolve(const char *name) {
