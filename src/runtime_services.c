@@ -132,9 +132,29 @@ static ABI const char *net_ntop(int af,const void *src,char *dst,uint32_t size) 
 }
 static ABI int32_t netctl_state(int32_t *state) { if (!state) return NET_CTL_INVALID_ADDR; *state=0; return 0; }
 static ABI int32_t netctl_info(int code,void *info) { (void)code; (void)info; return NET_CTL_NOT_CONNECTED; }
-static ABI int32_t netctl_register(void *cb,void *arg,int32_t *cid) { (void)cb; (void)arg; if (!cid) return NET_CTL_INVALID_ADDR; *cid=new_id(); return 0; }
-static ABI int32_t netctl_check(void) { return 0; }
-static ABI int32_t netctl_unregister(int cid) { (void)cid; return 0; }
+/* NetCtl callbacks: the first check after a registration tells it the network is
+ * disconnected (event 1), as an offline console does; a game may wait for that answer. */
+typedef void (ABI *NetCtlCallback)(int32_t event,void *arg);
+static struct { NetCtlCallback cb; void *arg; int told; } netctl_callbacks[8];
+static ABI int32_t netctl_register(void *cb,void *arg,int32_t *cid) {
+    if (!cid || !cb) return NET_CTL_INVALID_ADDR;
+    for (int i=0;i<8;++i) if (!netctl_callbacks[i].cb) {
+        netctl_callbacks[i].cb=(NetCtlCallback)cb; netctl_callbacks[i].arg=arg; netctl_callbacks[i].told=0;
+        *cid=i+1; return 0;
+    }
+    return (int32_t)0x80412104; /* NET_CTL CALLBACK_MAX */
+}
+static ABI int32_t netctl_check(void) {
+    for (int i=0;i<8;++i) if (netctl_callbacks[i].cb && !netctl_callbacks[i].told) {
+        netctl_callbacks[i].told=1;
+        netctl_callbacks[i].cb(1,netctl_callbacks[i].arg);
+    }
+    return 0;
+}
+static ABI int32_t netctl_unregister(int cid) {
+    if (cid>=1 && cid<=8) netctl_callbacks[cid-1].cb=NULL;
+    return 0;
+}
 static ABI int32_t netctl_nat(uint32_t *info) {
     if (!info) return NET_CTL_INVALID_ADDR;
     info[1]=0; info[2]=3; info[3]=0; /* stun failed, NAT type 3, no mapped address */
@@ -163,6 +183,28 @@ static ABI int32_t np_state(int32_t user,int32_t *state) {
     return 0;
 }
 static ABI int32_t np_signed_out(void) { return NP_SIGNED_OUT; }
+/* sceNpRegisterStateCallback: the next sceNpCheckCallback reports user 1 signed out (state 1),
+ * as the system does after a registration; a game may wait for it before going offline. */
+typedef void (ABI *NpStateCallback)(int32_t user,int32_t state,const void *np_id,void *arg);
+static NpStateCallback np_state_cb;
+static void *np_state_arg;
+static int np_state_told;
+static ABI int32_t np_state_register(void *cb,void *arg) {
+    if (!cb) return NP_INVALID_ARGUMENT;
+    if (np_state_cb) return (int32_t)0x80550004; /* NP CALLBACK_ALREADY_REGISTERED */
+    np_state_cb=(NpStateCallback)cb; np_state_arg=arg; np_state_told=0;
+    return 0;
+}
+static ABI int32_t np_state_unregister(void) { np_state_cb=NULL; return 0; }
+static ABI int32_t np_check_callback(void) {
+    if (np_state_cb && !np_state_told) {
+        static const unsigned char no_id[36];
+        np_state_told=1;
+        printf("Runtime: NP state callback: user 1 signed out\n");
+        np_state_cb(1,1,no_id,np_state_arg);
+    }
+    return 0;
+}
 static ABI int32_t np_register(void *cb,void *arg) { (void)cb; (void)arg; return new_id(); }
 static ABI void np_register_void(void *cb,void *arg) { (void)cb; (void)arg; }
 static ABI int32_t np_request(const void *param) { (void)param; return new_id(); }
@@ -435,9 +477,9 @@ static const RuntimeExport exports[]={
     {"sceHttpGetStatusCode",http_fail}, {"sceHttpGetResponseContentLength",http_fail},
     {"sceHttpReadData",http_fail},
     {"sceNpGetState",np_state}, {"sceNpGetOnlineId",np_signed_out}, {"sceNpGetNpId",np_signed_out},
-    {"sceNpRegisterStateCallback",np_register}, {"sceNpUnregisterStateCallback",ok_void},
+    {"sceNpRegisterStateCallback",np_state_register}, {"sceNpUnregisterStateCallback",np_state_unregister},
     {"sceNpRegisterGamePresenceCallback",np_register_void}, {"sceNpRegisterPlusEventCallback",np_register},
-    {"sceNpUnregisterPlusEventCallback",ok_void}, {"sceNpCheckCallback",ok_void},
+    {"sceNpUnregisterPlusEventCallback",ok_void}, {"sceNpCheckCallback",np_check_callback},
     {"sceNpSetNpTitleId",ok_void}, {"sceNpNotifyPlusFeature",ok_void}, {"sceNpSetContentRestriction",ok_void},
     {"sceNpCreateAsyncRequest",np_request}, {"sceNpDeleteRequest",ok_void}, {"sceNpAbortRequest",ok_void},
     {"sceNpPollAsync",np_poll}, {"sceNpCheckNpAvailability",np_signed_out},
