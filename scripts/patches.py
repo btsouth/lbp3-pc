@@ -337,13 +337,14 @@ RATCHET_CLOCK_PATCH=bytes.fromhex('c5f928c890909090') # vmovapd xmm1,xmm0; nop x
 
 def ratchet_pacing(fps,vblank_hz):
     """(interval, frame limit) for a preset at a vblank rate: the game's own pacing where flips
-    land on ticks of the preset's rate (30 at 60 Hz: the original interval, None), else interval 0
-    and BB_FPS_LIMIT=fps."""
+    land on ticks of the preset's rate (30 at 60 Hz: the original interval, None), else the same
+    interval plus BB_FPS_LIMIT=fps. Interval 0 there froze level loads (black screen after Continue
+    on the RTX 4070S, 2026-10-17), so the game keeps its interval and the port's limiter caps it."""
     if fps=='uncap':
         return 0.0,0
     if vblank_hz==(60 if fps=='30' else int(fps)):
         return RATCHET_FPS[fps],0
-    return 0.0,int(fps)
+    return RATCHET_FPS[fps],int(fps)
 
 
 def ratchet_fps_writes(fps,eboot,vblank_hz=None):
