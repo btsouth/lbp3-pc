@@ -17,6 +17,19 @@
 
 namespace Vulkan {
 
+namespace {
+/// bbport: a recording chunk holds 128 KiB with the command: longer region lists (LBP3 syncs a
+/// buffer in thousands of pieces while loading a level) are recorded as several commands, in
+/// order. Nothing between them needs a barrier: they are the regions of one copy.
+template <typename T, typename F>
+void ForEachRecordPart(std::span<const T> items, F&& record) {
+    constexpr size_t MaxItems = (RecordChunk::Capacity - 4096) / sizeof(T);
+    for (size_t at = 0; at < items.size(); at += MaxItems) {
+        record(items.subspan(at, std::min(MaxItems, items.size() - at)));
+    }
+}
+} // namespace
+
 static vk::ImageType ConvertImageType(AmdGpu::ImageType type) noexcept {
     switch (type) {
     case AmdGpu::ImageType::Color1D:
@@ -142,9 +155,11 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
         FlushBarriers();
     }
 
-    scheduler.Record([src_handle = src->Handle(), dst_handle = dst->Handle(),
-                      regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyBuffer(src_handle, dst_handle, regions.size(), regions.data());
+    ForEachRecordPart(copies, [&](std::span<const vk::BufferCopy> part) {
+        scheduler.Record([src_handle = src->Handle(), dst_handle = dst->Handle(),
+                          regions = scheduler.RecordData(part)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBuffer(src_handle, dst_handle, regions.size(), regions.data());
+        });
     });
 
     if (bounded) {
@@ -190,9 +205,11 @@ void Runtime::CopyFromGuestChunk(vk::Buffer src, const VideoCore::Buffer* dst,
     if (needs_flush) {
         FlushBarriers();
     }
-    scheduler.Record([src, dst_handle = dst->Handle(),
-                      regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyBuffer(src, dst_handle, regions.size(), regions.data());
+    ForEachRecordPart(copies, [&](std::span<const vk::BufferCopy> part) {
+        scheduler.Record([src, dst_handle = dst->Handle(),
+                          regions = scheduler.RecordData(part)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBuffer(src, dst_handle, regions.size(), regions.data());
+        });
     });
     for (const auto& copy : copies) {
         AccessBuffer(dst, copy.dstOffset, copy.size, vk::PipelineStageFlagBits2::eCopy,
@@ -286,10 +303,12 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
         FlushBarriers();
     }
 
-    scheduler.Record([src_handle = src->Handle(), image = dst->GetImage(),
-                      regions = scheduler.RecordData(upload_copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyBufferToImage(src_handle, image, vk::ImageLayout::eTransferDstOptimal,
-                                 regions.size(), regions.data());
+    ForEachRecordPart(upload_copies, [&](std::span<const vk::BufferImageCopy> part) {
+        scheduler.Record([src_handle = src->Handle(), image = dst->GetImage(),
+                          regions = scheduler.RecordData(part)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBufferToImage(src_handle, image, vk::ImageLayout::eTransferDstOptimal,
+                                     regions.size(), regions.data());
+        });
     });
 
     for (const auto& copy : upload_copies) {
@@ -318,10 +337,12 @@ void Runtime::DownloadImage(VideoCore::Image* src, const VideoCore::Buffer* dst,
         FlushBarriers();
     }
 
-    scheduler.Record([image = src->GetImage(), buffer = dst->Handle(),
-                      regions = scheduler.RecordData(download_copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, buffer,
-                                 regions.size(), regions.data());
+    ForEachRecordPart(download_copies, [&](std::span<const vk::BufferImageCopy> part) {
+        scheduler.Record([image = src->GetImage(), buffer = dst->Handle(),
+                          regions = scheduler.RecordData(part)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, buffer,
+                                     regions.size(), regions.data());
+        });
     });
 
     for (const auto& copy : download_copies) {
