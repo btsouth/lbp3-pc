@@ -254,10 +254,15 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     printf("Runtime: guest thread '%s' created (stack=%llu, prio=%d)\n",t->name,(unsigned long long)stack,t->attr.prio);
     /* The PS4 runs a new thread of higher priority (lower number) before its creator goes on;
      * some games rely on it. BB_CREATE_YIELD_US=N: the creator waits N us after such a create. */
+    /* BB_CREATE_YIELD_ALL=1: after every create (experiment). */
     static long yield_us=-1;
-    if (yield_us<0) { const char *v=getenv("BB_CREATE_YIELD_US"); yield_us=v ? atol(v) : 0; }
+    static int yield_all;
+    if (yield_us<0) {
+        const char *v=getenv("BB_CREATE_YIELD_US"), *all=getenv("BB_CREATE_YIELD_ALL");
+        yield_us=v ? atol(v) : 0; yield_all=all && !strcmp(all,"1");
+    }
     GuestThread *self=runtime_thread_current();
-    if (yield_us>0 && self && t->attr.prio<self->attr.prio) usleep((useconds_t)yield_us);
+    if (yield_us>0 && self && (yield_all || t->attr.prio<self->attr.prio)) usleep((useconds_t)yield_us);
     return 0;
 }
 static ABI int32_t thread_create(GuestThread **out,ThreadAttr **attr,GuestEntry entry,void *argument,const char *name) {
