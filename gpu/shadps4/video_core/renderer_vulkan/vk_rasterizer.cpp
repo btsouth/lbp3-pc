@@ -3007,6 +3007,42 @@ void TraceShaderBinding(const Shader::Info& stage, VAddr addr, u64 size, bool wr
 }
 } // namespace
 
+namespace {
+/// bbport diagnostics BB_LOG_CONSTANTS=hash,... (GCN program hashes, hex): prints the first 64
+/// floats of those shaders' constant ring buffers for their first BB_LOG_CONSTANTS_COUNT (64)
+/// bindings, with the frame number: values that change frame to frame (jitter, matrices).
+void LogConstants(u64 hash, u32 slot, const void* data, u64 size) {
+    static const std::vector<u64> hashes = [] {
+        std::vector<u64> out;
+        for (const char* p = std::getenv("BB_LOG_CONSTANTS"); p && *p;) {
+            char* end = nullptr;
+            out.push_back(std::strtoull(p, &end, 16));
+            p = end && *end == ',' ? end + 1 : nullptr;
+        }
+        return out;
+    }();
+    if (hashes.empty() || std::ranges::find(hashes, hash) == hashes.end()) {
+        return;
+    }
+    static const long limit = [] {
+        const char* v = std::getenv("BB_LOG_CONSTANTS_COUNT");
+        return v ? std::strtol(v, nullptr, 10) : 64L;
+    }();
+    static std::atomic<long> printed{0};
+    if (printed.fetch_add(1, std::memory_order_relaxed) >= limit) {
+        return;
+    }
+    const auto* f = static_cast<const float*>(data);
+    std::string line = fmt::format("Constants: frame {} shader {:016x} slot {} size {}:",
+                                   BbStats::frame_number.load(std::memory_order_relaxed), hash,
+                                   slot, size);
+    for (u64 i = 0; i < std::min<u64>(size / 4, 64); ++i) {
+        line += fmt::format(" [{}]{:.7g}", i, f[i]);
+    }
+    std::printf("%s\n", line.c_str());
+}
+} // namespace
+
 void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,
                              Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data, u32& write_index) {
@@ -3022,6 +3058,14 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     memory->IsValidGpuMapping(ring->address, 0)) {
                     camera_motion->OnConstants(reinterpret_cast<const float*>(ring->address));
                 }
+                // bbport: the frame capture lists constant ring bindings too (the ring's copy,
+                // what the shader reads).
+                if (FrameCapture::Active()) {
+                    FrameCapture::Buffer(stage.pgm_hash, binding.buffer, ring->address,
+                                         constant_ring->Data(ring->offset), ring->size);
+                }
+                LogConstants(stage.pgm_hash, binding.buffer, constant_ring->Data(ring->offset),
+                             ring->size);
                 push_data.AddOffset(binding.buffer, 0);
             }
             buffer_infos.emplace_back(constant_ring->Handle(), ring->offset, ring->size);
