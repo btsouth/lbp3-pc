@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <source_location>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -863,11 +864,13 @@ public:
 
     /// Makes room for `bytes` of RecordData() plus the command that uses them in the current
     /// chunk: data and command must share a chunk, which is recycled once executed.
-    void ReserveRecordData(size_t bytes) {
+    void ReserveRecordData(size_t bytes,
+                           std::source_location where = std::source_location::current()) {
         if (!IsRecordingDeferred()) {
             return;
         }
-        ASSERT(bytes + 1024 <= RecordChunk::Capacity);
+        ASSERT_MSG(bytes + 1024 <= RecordChunk::Capacity, "RecordData of {} bytes from {}:{}", bytes,
+                   where.file_name(), where.line());
         if (RecordChunk::Capacity - CurrentChunk().Size() < bytes + 1024) {
             RetireChunk();
         }
