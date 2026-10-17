@@ -130,8 +130,30 @@ static ABI const char *net_ntop(int af,const void *src,char *dst,uint32_t size) 
     if (af!=2) { net_errno=47; return NULL; }
     return inet_ntop(AF_INET,src,dst,size);
 }
-static ABI int32_t netctl_state(int32_t *state) { if (!state) return NET_CTL_INVALID_ADDR; *state=0; return 0; }
-static ABI int32_t netctl_info(int code,void *info) { (void)code; (void)info; return NET_CTL_NOT_CONNECTED; }
+static int np_signed_in(void);
+/* Disconnected, or with BB_NP_SIGNED_IN=1 connected to a LAN (IP obtained) whose internet servers
+ * never answer: what a console sees of a game whose servers are gone. */
+static ABI int32_t netctl_state(int32_t *state) {
+    if (!state) return NET_CTL_INVALID_ADDR;
+    *state=np_signed_in() ? 3 : 0; return 0;
+}
+static ABI int32_t netctl_info(int code,void *info) {
+    if (!np_signed_in()) return NET_CTL_NOT_CONNECTED;
+    if (!info) return NET_CTL_INVALID_ADDR;
+    memset(info,0,256); /* SceNetCtlInfo: a union, at most 256 bytes */
+    switch (code) {
+    case 1: *(uint32_t *)info=0; break;                                   /* device: wired */
+    case 3: *(uint32_t *)info=1500; break;                                /* MTU */
+    case 4: *(uint32_t *)info=1; break;                                   /* link: connected */
+    case 11: *(uint32_t *)info=0; break;                                  /* IP config: DHCP */
+    case 14: strcpy(info,"192.168.0.2"); break;                           /* IP address */
+    case 15: strcpy(info,"255.255.255.0"); break;                         /* netmask */
+    case 16: case 17: case 18: strcpy(info,"192.168.0.1"); break;         /* router, DNS */
+    case 19: *(uint32_t *)info=0; break;                                  /* HTTP proxy: off */
+    default: break;
+    }
+    return 0;
+}
 /* NetCtl callbacks: the first check after a registration tells it the network is
  * disconnected (event 1), as an offline console does; a game may wait for that answer. */
 typedef void (ABI *NetCtlCallback)(int32_t event,void *arg);
@@ -147,7 +169,7 @@ static ABI int32_t netctl_register(void *cb,void *arg,int32_t *cid) {
 static ABI int32_t netctl_check(void) {
     for (int i=0;i<8;++i) if (netctl_callbacks[i].cb && !netctl_callbacks[i].told) {
         netctl_callbacks[i].told=1;
-        netctl_callbacks[i].cb(1,netctl_callbacks[i].arg);
+        netctl_callbacks[i].cb(np_signed_in() ? 3 : 1,netctl_callbacks[i].arg); /* IP obtained : disconnected */
     }
     return 0;
 }
