@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <mutex>
 #include <dlfcn.h>
 #include <map>
 #include <unordered_set>
@@ -42,6 +44,35 @@
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace Vulkan {
+
+// bbport BB_SKIP_SHADERS_FILE=path (diagnostics): draws whose vertex or pixel shader hash (hex,
+// as in frame captures) is listed in the file are left out. Re-read twice a second, so one run
+// can try several sets.
+static bool SkipDrawFor(u64 vs_hash, u64 ps_hash) {
+    static const char* path = std::getenv("BB_SKIP_SHADERS_FILE");
+    if (!path) {
+        return false;
+    }
+    static std::mutex lock;
+    static std::vector<u64> hashes;
+    static auto checked = std::chrono::steady_clock::time_point{};
+    std::scoped_lock lk{lock};
+    if (const auto now = std::chrono::steady_clock::now();
+        now - checked > std::chrono::milliseconds(500)) {
+        checked = now;
+        hashes.clear();
+        if (FILE* f = std::fopen(path, "r")) {
+            unsigned long long h;
+            while (std::fscanf(f, "%llx", &h) == 1) {
+                hashes.push_back(h);
+            }
+            std::fclose(f);
+        }
+    }
+    return std::ranges::find(hashes, vs_hash) != hashes.end() ||
+           (ps_hash && std::ranges::find(hashes, ps_hash) != hashes.end());
+}
+
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
@@ -1787,9 +1818,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         .program = {vs_info.ProgramBase(), ps_info ? ps_info->ProgramBase() : 0},
         .count = {num_indices, num_instances, 0},
     };
+    const bool skip_draw = SkipDrawFor(vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
-        if (is_indexed) {
+        if (skip_draw) {
+        } else if (is_indexed) {
             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
         } else {
             cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
@@ -1925,9 +1958,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         .address = indirect.args,
         .count = {max_count, stride, 0},
     };
+    const bool skip_draw = SkipDrawFor(vs_crumb ? vs_crumb->pgm_hash : 0,
+                                       ps_crumb ? ps_crumb->pgm_hash : 0);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
-        if (is_indexed) {
+        if (skip_draw) {
+        } else if (is_indexed) {
             if (counts) {
                 cmdbuf.drawIndexedIndirectCount(args, args_offset, counts, counts_offset, max_count,
                                                 stride);
