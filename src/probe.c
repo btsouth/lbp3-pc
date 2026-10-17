@@ -142,18 +142,47 @@ static ABI uint64_t stubbed(uint32_t id, uintptr_t argument) {
     return 0;
 }
 /* BB_COUNT_IMPORTS=1 (porting): every host import goes through a stub that counts its calls
- * (lock inc, then a jump; only r11 and the flags change), and the busiest imports are printed
- * every 5 s: what a game polls while it waits shows where it is stuck. */
+ * (lock inc, then a jump; only r11 and the flags change), the first calls of each are printed
+ * and the busiest imports every 5 s: what a game polls while it waits shows where it is stuck. */
 static uint64_t *call_counts;
 static unsigned char *count_stubs;
+/* The first CALL_LOG calls of each counted import are also printed with three arguments and the
+ * caller: the stub jumps to count_log_slow with r11 = &call_records[id] ({id, target}). */
+enum { CALL_LOG = 3, COUNT_STUB = 64 };
+typedef struct { uint64_t id; uintptr_t target; } CallRecord;
+static CallRecord *call_records;
+__attribute__((used)) static void count_log(const CallRecord *r, uint64_t a0, uint64_t a1, uint64_t a2, uintptr_t ret) {
+    const char *symbol = runtime_symbol(names[r->id]);
+    printf("CALL: %s(%#llx, %#llx, %#llx) from +%#llx\n", symbol ? symbol : names[r->id], (unsigned long long)a0,
+           (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)(ret - (uintptr_t)image));
+}
+void count_log_slow(void) __asm__("count_log_slow");
+__asm__(".text\ncount_log_slow:\n"
+        " push %rdi\n push %rsi\n push %rdx\n push %rcx\n push %r8\n push %r9\n push %rax\n push %r11\n"
+        " sub $136,%rsp\n"
+        " movdqu %xmm0,0(%rsp)\n movdqu %xmm1,16(%rsp)\n movdqu %xmm2,32(%rsp)\n movdqu %xmm3,48(%rsp)\n"
+        " movdqu %xmm4,64(%rsp)\n movdqu %xmm5,80(%rsp)\n movdqu %xmm6,96(%rsp)\n movdqu %xmm7,112(%rsp)\n"
+        " mov %r11,%rdi\n mov 192(%rsp),%rsi\n mov 184(%rsp),%rdx\n mov 176(%rsp),%rcx\n mov 200(%rsp),%r8\n"
+        " call count_log\n"
+        " movdqu 0(%rsp),%xmm0\n movdqu 16(%rsp),%xmm1\n movdqu 32(%rsp),%xmm2\n movdqu 48(%rsp),%xmm3\n"
+        " movdqu 64(%rsp),%xmm4\n movdqu 80(%rsp),%xmm5\n movdqu 96(%rsp),%xmm6\n movdqu 112(%rsp),%xmm7\n"
+        " add $136,%rsp\n"
+        " pop %r11\n pop %rax\n pop %r9\n pop %r8\n pop %rcx\n pop %rdx\n pop %rsi\n pop %rdi\n"
+        " jmp *8(%r11)\n");
 static uintptr_t counted(uint64_t id, uintptr_t target) {
-    unsigned char *t = count_stubs + id * 32;
+    unsigned char *t = count_stubs + id * COUNT_STUB;
     if (t[0] != 0x49) {
-        uintptr_t counter = (uintptr_t)&call_counts[id];
-        t[0] = 0x49; t[1] = 0xbb; memcpy(t + 2, &counter, 8);   /* movabs r11, counter */
-        t[10] = 0xf0; t[11] = 0x49; t[12] = 0xff; t[13] = 0x03;  /* lock inc qword [r11] */
-        t[14] = 0x49; t[15] = 0xbb; memcpy(t + 16, &target, 8); /* movabs r11, target */
-        t[24] = 0x41; t[25] = 0xff; t[26] = 0xe3;               /* jmp r11 */
+        uintptr_t counter = (uintptr_t)&call_counts[id], record = (uintptr_t)&call_records[id], slow = (uintptr_t)count_log_slow;
+        call_records[id] = (CallRecord){id, target};
+        t[0] = 0x49; t[1] = 0xbb; memcpy(t + 2, &counter, 8);    /* movabs r11, counter */
+        t[10] = 0xf0; t[11] = 0x49; t[12] = 0xff; t[13] = 0x03;   /* lock inc qword [r11] */
+        t[14] = 0x49; t[15] = 0x83; t[16] = 0x3b; t[17] = CALL_LOG; /* cmp qword [r11], CALL_LOG */
+        t[18] = 0x77; t[19] = 16;                                 /* ja +16 (the fast path) */
+        t[20] = 0x49; t[21] = 0xbb; memcpy(t + 22, &record, 8);   /* movabs r11, record */
+        t[30] = 0xff; t[31] = 0x25; uint32_t rel = 13; memcpy(t + 32, &rel, 4); /* jmp [rip+13] */
+        t[36] = 0x49; t[37] = 0xbb; memcpy(t + 38, &target, 8);   /* movabs r11, target */
+        t[46] = 0x41; t[47] = 0xff; t[48] = 0xe3;                 /* jmp r11 */
+        memcpy(t + 49, &slow, 8);                                 /* count_log_slow */
     }
     return (uintptr_t)t;
 }
@@ -591,7 +620,8 @@ int main(int argc, char **argv) {
     const char *count_env = getenv("BB_COUNT_IMPORTS");
     if (count_env && !strcmp(count_env, "1")) {
         call_counts = calloc(import_count + 1, sizeof(*call_counts));
-        count_stubs = allocate(round_page((import_count + 1) * 32));
+        call_records = calloc(import_count + 1, sizeof(*call_records));
+        count_stubs = allocate(round_page((import_count + 1) * COUNT_STUB));
     }
     unsigned char *traps = allocate(round_page((import_count + 1) * 32));
     unsigned char *data_traps = allocate((import_count + 1) * page_size);
@@ -641,7 +671,7 @@ int main(int argc, char **argv) {
     if (!cpu_only) bbgpu_patch_image(image, size);
     protect(traps, round_page((import_count + 1) * 32), 5);
     if (count_stubs) {
-        protect(count_stubs, round_page((import_count + 1) * 32), 5);
+        protect(count_stubs, round_page((import_count + 1) * COUNT_STUB), 5);
 #ifndef _WIN32
         pthread_t reporter;
         pthread_create(&reporter, NULL, count_report, NULL);
