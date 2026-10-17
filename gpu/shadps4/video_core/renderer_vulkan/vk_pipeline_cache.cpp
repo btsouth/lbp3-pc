@@ -432,13 +432,33 @@ PipelineCache::~PipelineCache() = default;
 std::atomic<u64> g_bb_compile_ns;
 std::atomic<u32> g_bb_compiles;
 namespace {
+// bbport BB_SHADER_PROFILE=1: time each translation and pipeline; slow ones always reported.
+bool ShaderProfile() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_SHADER_PROFILE");
+        return env && *env && *env != '0';
+    }();
+    return enabled;
+}
+double ProfileSeconds() {
+    static const auto start = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
 struct CompileTimer {
+    const char* what = nullptr; // a pipeline: reported with its hash when profiled or slow
+    u64 hash = 0;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     ~CompileTimer() {
-        g_bb_compile_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                   std::chrono::steady_clock::now() - start)
-                                   .count());
+        const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - start)
+                               .count());
+        g_bb_compile_ns += ns;
         ++g_bb_compiles;
+        if (what && (ShaderProfile() || ns > 50'000'000)) {
+            std::printf("GPU: [%.3f] %s pipeline %016llx on the GPU thread: %.1f ms\n",
+                        ProfileSeconds(), what, (unsigned long long)hash, double(ns) / 1e6);
+            std::fflush(stdout);
+        }
     }
 };
 } // namespace
@@ -600,7 +620,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
-        CompileTimer timer;
+        CompileTimer timer{"graphics", pipeline_hash};
 
         GraphicsPipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<GraphicsPipeline>(
@@ -700,7 +720,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}", pipeline_hash);
-        CompileTimer timer;
+        CompileTimer timer{"compute", pipeline_hash};
 
         ComputePipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
@@ -1038,16 +1058,12 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
     CompileTimer timer;
-    // bbport BB_SHADER_PROFILE=1: time each translation; slow ones are always reported.
-    static const bool shader_profile = [] {
-        const char* env = std::getenv("BB_SHADER_PROFILE");
-        return env && *env && *env != '0';
-    }();
+    const bool shader_profile = ShaderProfile();
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
     if (shader_profile) {
-        std::printf("GPU: translating %s shader %016llx%s, %zu dwords\n",
-                    fmt::format("{}", info.hw_stage).c_str(), (unsigned long long)info.pgm_hash,
+        std::printf("GPU: [%.3f] translating %s shader %016llx%s, %zu dwords\n",
+                    ProfileSeconds(), fmt::format("{}", info.hw_stage).c_str(), (unsigned long long)info.pgm_hash,
                     perm_idx != 0 ? " (permutation)" : "", code.size());
         std::fflush(stdout);
     }
@@ -1074,9 +1090,9 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
         return std::chrono::duration<double, std::milli>(b - a).count();
     };
     if (shader_profile || ms(t0, t3) > 50.0) {
-        std::printf("GPU: %s shader %016llx%s, %zu dwords: translate %.1f ms, SPIR-V %.1f ms, "
+        std::printf("GPU: [%.3f] %s shader %016llx%s, %zu dwords: translate %.1f ms, SPIR-V %.1f ms, "
                     "module %.1f ms\n",
-                    fmt::format("{}", info.hw_stage).c_str(), (unsigned long long)info.pgm_hash,
+                    ProfileSeconds(), fmt::format("{}", info.hw_stage).c_str(), (unsigned long long)info.pgm_hash,
                     perm_idx != 0 ? " (permutation)" : "", code.size(), ms(t0, t1), ms(t1, t2),
                     ms(t2, t3));
         std::fflush(stdout);
