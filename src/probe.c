@@ -163,18 +163,21 @@ static void *count_report(void *unused) {
     uint64_t *last = calloc(import_count, sizeof(*last));
     for (;;) {
         sleep(5);
+        uint64_t *now = calloc(import_count, sizeof(*now));
+        for (uint64_t i = 0; i < import_count; ++i) now[i] = __atomic_load_n(&call_counts[i], __ATOMIC_RELAXED);
         printf("Import calls, last 5 s:");
         for (int k = 0; k < 12; ++k) {
             uint64_t best = 0, at = 0;
             for (uint64_t i = 0; i < import_count; ++i) {
-                uint64_t d = __atomic_load_n(&call_counts[i], __ATOMIC_RELAXED) - last[i];
+                uint64_t d = now[i] - last[i];
                 if (d > best) { best = d; at = i; }
             }
             if (!best) break;
             last[at] += best;
             printf(" %s=%llu", runtime_symbol(names[at]) ? runtime_symbol(names[at]) : names[at], (unsigned long long)best);
         }
-        for (uint64_t i = 0; i < import_count; ++i) last[i] = __atomic_load_n(&call_counts[i], __ATOMIC_RELAXED);
+        memcpy(last, now, import_count * sizeof(*now));
+        free(now);
         printf("\n");
     }
     return NULL;

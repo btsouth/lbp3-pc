@@ -158,9 +158,15 @@ static ABI void np_register_void(void *cb,void *arg) { (void)cb; (void)arg; }
 static ABI int32_t np_request(const void *param) { (void)param; return new_id(); }
 static ABI int32_t np_request_ctx(int32_t ctx,const void *param) { (void)ctx; (void)param; return new_id(); }
 static ABI int32_t np_poll(int32_t request,int32_t *result) { (void)request; if (result) *result=NP_SIGNED_OUT; return 0; }
-static ABI int32_t np_compare(const void *a,const void *b) {
+/* Online IDs compare as strings of up to 16 characters (what follows the terminator does not
+ * count); NP IDs also compare their opt and reserved bytes (SceNpId: handle 20, opt 8, reserved 8). */
+static ABI int32_t np_compare_online(const char *a,const char *b) {
     if (!a || !b) return NP_INVALID_ARGUMENT;
-    return memcmp(a,b,16) ? (int32_t)0x80550609 : 0; /* NP_UTIL NOT_MATCH */
+    return strncmp(a,b,16) ? (int32_t)0x80550609 : 0; /* NP_UTIL NOT_MATCH */
+}
+static ABI int32_t np_compare(const char *a,const char *b) {
+    if (!a || !b) return NP_INVALID_ARGUMENT;
+    return strncmp(a,b,16) || memcmp(a+20,b+20,16) ? (int32_t)0x80550609 : 0;
 }
 
 /* ---- Voice chat: ports exist, carry no audio ---- */
@@ -427,7 +433,7 @@ static const RuntimeExport exports[]={
     {"sceNpPollAsync",np_poll}, {"sceNpCheckNpAvailability",np_signed_out},
     {"sceNpGetParentalControlInfo",np_signed_out}, {"sceNpCheckPlus",np_signed_out},
     {"sceNpGetGamePresenceStatus",np_signed_out},
-    {"sceNpCmpNpId",np_compare}, {"sceNpCmpOnlineId",np_compare},
+    {"sceNpCmpNpId",np_compare}, {"sceNpCmpOnlineId",np_compare_online},
     {"sceNpAuthCreateAsyncRequest",np_request}, {"sceNpAuthDeleteRequest",ok_void},
     {"sceNpAuthPollAsync",np_poll}, {"sceNpAuthGetAuthorizationCode",np_signed_out},
     {"sceNpLookupCreateTitleCtx",np_request}, {"sceNpLookupDeleteTitleCtx",ok_void},
