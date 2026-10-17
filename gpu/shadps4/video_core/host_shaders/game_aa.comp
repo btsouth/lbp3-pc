@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// bbport: the scene upscaler standing in for a game's own TAA (games/<game>.cpp SceneAa).
+// Default: its inputs from the game's images. The depth for the upscaler from the game's
+// view-space depth, as a standard 0..1 projection with the push constants' near and far, and the
+// game's motion vectors times `motion_scale` (render pixels, previous position minus current, as
+// the upscaler takes them). STORE=1: the upscaled frame into the game's 11/11/10 scene color.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#if STORE
+layout(binding = 0, rgba16f) uniform readonly image2D upscaled;
+layout(binding = 1, r11f_g11f_b10f) uniform writeonly image2D scene;
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(scene)))) {
+        return;
+    }
+    imageStore(scene, pixel, vec4(max(imageLoad(upscaled, pixel).rgb, vec3(0.0)), 1.0));
+}
+#else
+layout(binding = 0) uniform texture2D linear_depth;
+layout(binding = 1) uniform texture2D game_motion;
+layout(binding = 2, r32f) uniform writeonly image2D depth;
+layout(binding = 3, rg16f) uniform writeonly image2D motion;
+
+layout(push_constant) uniform Params {
+    float near_z;
+    float far_z;
+    vec2 motion_scale;
+};
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(depth)))) {
+        return;
+    }
+    const float z = clamp(texelFetch(linear_depth, pixel, 0).r, near_z, far_z);
+    // D3D-style projection: near maps to 0, far to 1.
+    const float device = far_z * (z - near_z) / (z * (far_z - near_z));
+    imageStore(depth, pixel, vec4(device));
+    imageStore(motion, pixel, vec4(texelFetch(game_motion, pixel, 0).rg * motion_scale, 0.0, 0.0));
+}
+#endif

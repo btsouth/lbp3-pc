@@ -2001,6 +2001,27 @@ void Rasterizer::DispatchDirect() {
     DispatchRecord(pipeline);
 }
 
+std::span<const u32> Rasterizer::StageConstants(const Shader::Info& stage) {
+    for (u32 index = 0; index < stage.buffers.size(); ++index) {
+        const auto& desc = stage.buffers[index];
+        if (desc.IsSpecial()) {
+            continue;
+        }
+        // The draw pipe's copy (what the shader reads), else the game's memory.
+        if (const RingBinding* ring = num_ring_stages ? FindRingBinding(stage, index) : nullptr) {
+            return {reinterpret_cast<const u32*>(constant_ring->Data(ring->offset)),
+                    ring->size / sizeof(u32)};
+        }
+        const auto vsharp = desc.GetSharp(stage);
+        if (vsharp.base_address == 0 || !memory->IsValidGpuMapping(vsharp.base_address, 0)) {
+            return {};
+        }
+        const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
+        return {reinterpret_cast<const u32*>(vsharp.base_address), size / sizeof(u32)};
+    }
+    return {};
+}
+
 void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     BB_SECTION(DispatchRecord);
     buffer_cache.NewPacket();
@@ -2022,7 +2043,15 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         }
     };
     if (upscaler->Enabled()) {
-        upscaler->OnDispatch(cs.pgm_hash);
+        // bbport: the game TAA stand-in reads this frame's jitter from the TAA's constants; a
+        // dispatch whose result the upscaler wrote instead does not run.
+        std::span<const u32> constants;
+        if (const u64 taa = upscaler->GameAaShader(); taa && cs.pgm_hash == taa) {
+            constants = StageConstants(cs);
+        }
+        if (upscaler->OnDispatch(cs.pgm_hash, constants)) {
+            return;
+        }
     }
     bool hle;
     {

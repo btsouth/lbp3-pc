@@ -22,6 +22,25 @@ struct CoreServices {
     void (*fresh_range)(std::uint64_t address, std::uint64_t size) = nullptr;
 };
 
+/// A game's own temporal anti-aliasing that the port's temporal upscaler (DLAA / FSR native AA)
+/// can stand in for at the game's render size. Images are named by guest address.
+struct SceneAa {
+    /// The TAA resolve compute shader (GCN program hash): the upscaler runs just before it.
+    std::uint64_t taa_shader = 0;
+    /// The compute pass after it that copies the TAA result into the scene color: replaced by
+    /// the upscaler's result when it ran.
+    std::uint64_t copy_shader = 0;
+    /// HDR scene color before TAA (the TAA reads it, the copy writes it).
+    std::uint64_t color = 0;
+    /// Motion vectors (RG16F), render pixels, current position minus previous, without jitter.
+    std::uint64_t motion = 0;
+    /// View-space depth (R32F), up to `far` for the sky.
+    std::uint64_t linear_depth = 0;
+    float far = 0;
+    /// The TAA's first constant buffer holds this frame's jitter (x, y, render pixels) here.
+    std::uint32_t jitter_dword = 0;
+};
+
 struct Profile {
     const char* name = nullptr;
     /// The param.sfo TITLE_IDs it is for.
@@ -36,6 +55,8 @@ struct Profile {
     /// A compute shader (GCN program hash) that only copies buffers, into memory the translator
     /// reads on the CPU: its stores go through to the game's memory; 0 = none known.
     std::uint64_t buffer_copy_shader = 0;
+    /// The game's own TAA, for the scene upscaler; nullptr = none known.
+    const SceneAa* scene_aa = nullptr;
 };
 
 /// Chooses the profile for the game by its TITLE_ID (bbgpu_init). BB_GAME_PROFILE=none runs the
@@ -49,6 +70,12 @@ const Profile* Active();
 inline std::uint64_t BufferCopyShader() {
     const Profile* profile = Active();
     return profile ? profile->buffer_copy_shader : 0;
+}
+
+/// The active profile's TAA description, or nullptr.
+inline const SceneAa* ActiveSceneAa() {
+    const Profile* profile = Active();
+    return profile ? profile->scene_aa : nullptr;
 }
 
 /// Whether guest_rip is in code the active profile knows to write per-frame data.

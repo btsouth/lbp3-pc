@@ -578,7 +578,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         game->install_hooks(Game::CoreServices{
             .fresh_range = [](u64 address, u64 size) { hooked_cache->NoteFreshRange(address, size); },
         });
-    } else if (GuestInPlace() && game) {
+    } else if (GuestInPlace() && game && game->install_hooks) {
         std::printf("Guest hooks: off (BB_GUEST_HOOKS=0): nothing in the game's own code is hooked\n");
     }
     if (LayerMode()) {
