@@ -10,6 +10,7 @@
 
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/image_info.h"
+#include "video_core/texture_cache/image_view.h"
 
 namespace Vulkan {
 
@@ -19,6 +20,7 @@ struct Target {
     VAddr address{};
     vk::Format format{};
     u32 width{}, height{};
+    std::string view; ///< sampled view format and swizzle when they differ from the image
     bool operator==(const Target&) const = default;
 };
 
@@ -64,7 +66,8 @@ std::string Describe(const Target& t) {
     if (!t.address) {
         return "-";
     }
-    return std::format("{:#x} {} {}x{}", t.address, vk::to_string(t.format), t.width, t.height);
+    return std::format("{:#x} {} {}x{}{}", t.address, vk::to_string(t.format), t.width, t.height,
+                       t.view);
 }
 
 void AddSampled(Entry& entry) {
@@ -183,7 +186,14 @@ void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_
     // Frame boundaries in the command stream: the pass that writes a display buffer.
     const bool new_pass = !(pass_open && !entries.empty() && !entries.back().compute &&
                             entries.back().colors == targets);
-    if (display && new_pass) {
+    // bbport BB_CAPTURE_MIN_PASSES=N: games that write a display buffer more than once a frame
+    // (Ratchet & Clank) are recorded on until N passes, across those writes.
+    static const size_t min_passes = [] {
+        const char* env = std::getenv("BB_CAPTURE_MIN_PASSES");
+        return env ? size_t(std::strtoull(env, nullptr, 0)) : size_t(0);
+    }();
+    if (display && new_pass && !(state.load(std::memory_order_relaxed) == Recording &&
+                                 entries.size() < min_passes)) {
         if (state.load(std::memory_order_relaxed) == Recording) {
             Write(last_presented.load(std::memory_order_relaxed));
             entries.clear();
@@ -258,9 +268,28 @@ void FrameCapture::Buffer(u64 stage_hash, u32 slot, VAddr address, const void* d
     pending_buffers.push_back(std::move(out));
 }
 
-void FrameCapture::Sampled(const VideoCore::ImageInfo& info, bool storage) {
+void FrameCapture::Sampled(const VideoCore::ImageInfo& info, bool storage,
+                           const VideoCore::ImageViewInfo* view) {
     if (pending_sampled.size() < 64) {
-        pending_sampled.emplace_back(ToTarget(info), storage);
+        Target target = ToTarget(info);
+        if (view) {
+            const auto letter = [](vk::ComponentSwizzle c, char identity) {
+                switch (c) {
+                case vk::ComponentSwizzle::eR: return 'R';
+                case vk::ComponentSwizzle::eG: return 'G';
+                case vk::ComponentSwizzle::eB: return 'B';
+                case vk::ComponentSwizzle::eA: return 'A';
+                case vk::ComponentSwizzle::eZero: return '0';
+                case vk::ComponentSwizzle::eOne: return '1';
+                default: return identity;
+                }
+            };
+            const auto& m = view->mapping;
+            target.view = std::format(" view {} {}{}{}{}", vk::to_string(view->format),
+                                      letter(m.r, 'R'), letter(m.g, 'G'), letter(m.b, 'B'),
+                                      letter(m.a, 'A'));
+        }
+        pending_sampled.emplace_back(std::move(target), storage);
     }
 }
 

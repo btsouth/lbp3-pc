@@ -3453,7 +3453,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             image.usage.storage |= is_storage;
             image.usage.texture |= !is_storage;
             if (FrameCapture::Active()) {
-                FrameCapture::Sampled(image.info, is_storage);
+                FrameCapture::Sampled(image.info, is_storage, &desc.view_info);
             }
 
             vk::ImageView view = *image_view.image_view;
