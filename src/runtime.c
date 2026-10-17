@@ -101,6 +101,7 @@ void runtime_report(void) {
     runtime_mutex_report();
     runtime_rwlock_report();
     runtime_sema_report();
+    runtime_evf_report();
     runtime_content_report();
     runtime_memory_report();
     runtime_ajm_report();

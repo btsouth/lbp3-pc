@@ -49,6 +49,7 @@ uintptr_t runtime_sema_resolve(const char *name);
 uintptr_t runtime_evf_resolve(const char *name);
 uintptr_t runtime_fiber_resolve(const char *name);
 uintptr_t runtime_misc_resolve(const char *name);
+void runtime_evf_report(void);
 void runtime_sema_report(void);
 unsigned runtime_sema_waiters(uint32_t id);
 uintptr_t runtime_time_resolve(const char *name);

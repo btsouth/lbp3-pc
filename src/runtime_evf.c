@@ -206,6 +206,8 @@ static const RuntimeExport exports[]={
     {"sem_getvalue",psem_getvalue},
 };
 uintptr_t runtime_evf_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
+void runtime_evf_report(void) {}
 #else
 uintptr_t runtime_evf_resolve(const char *name) { (void)name; return 0; }
+void runtime_evf_report(void) {}
 #endif
