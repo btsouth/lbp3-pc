@@ -3,9 +3,12 @@
 
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <unordered_map>
 #include <shared_mutex>
+#include <stop_token>
+#include <thread>
 #include <variant>
 #include <boost/container/static_vector.hpp>
 #include <tsl/robin_map.h>
@@ -221,7 +224,14 @@ private:
     tsl::robin_map<GraphicsPipelineKey, std::shared_ptr<PendingPipeline>> pending_graphics;
     u64 async_started = 0, async_skipped = 0, async_waited = 0; ///< statistics
     u64 deferred_started = 0;
-    std::unique_ptr<PipelineCompiler> compiler; ///< last: its threads are joined first
+    std::unique_ptr<PipelineCompiler> compiler; ///< its threads are joined before the members
+
+    /// bbport: the driver's VkPipelineCache persisted to the game's cache directory.
+    void OpenDriverCache();
+    void StartDriverCacheSaver();
+    void SaveDriverCache();
+    size_t driver_cache_saved = 0;   ///< size last written (saver thread only after opening)
+    std::jthread driver_cache_saver; ///< last: stopped first
 };
 
 } // namespace Vulkan
