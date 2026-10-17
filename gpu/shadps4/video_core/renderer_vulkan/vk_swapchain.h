@@ -75,6 +75,15 @@ public:
         return frame_index;
     }
 
+    /// bbport: the GPU stall report.
+    vk::PresentModeKHR GetPresentMode() const {
+        return present_mode;
+    }
+
+    u32 GetImageIndex() const {
+        return image_index;
+    }
+
     vk::Extent2D GetExtent() const {
         return extent;
     }

@@ -831,6 +831,31 @@ void Scheduler::Wait(u64 tick) {
     work_semaphore.Wait(tick);
 }
 
+void Scheduler::ReportState(const char* name) {
+    const auto [result, done] =
+        instance.GetDevice().getSemaphoreCounterValue(work_semaphore.Handle());
+    std::printf("  %s scheduler: recording tick %llu, handed to the queue up to %llu, GPU done %llu",
+                name, (unsigned long long)CurrentTick(),
+                (unsigned long long)submitted_tick.load(std::memory_order_acquire),
+                result == vk::Result::eSuccess ? (unsigned long long)done : 0ull);
+    if (!workers.empty()) {
+        // The stalled thread may hold the lock: only looked at when it is free.
+        std::unique_lock lk{recorder_mutex, std::try_to_lock};
+        if (lk.owns_lock()) {
+            size_t queued = 0;
+            for (const auto& worker : workers) {
+                queued += worker->queue.size();
+            }
+            std::printf("; %zu chunks queued to record, %zu ordered tasks (%s)%s", queued,
+                        ordered_queue.size(), OrderedReady() ? "ready" : "waiting",
+                        RecordingIdle() ? ", recording idle" : "");
+        } else {
+            std::printf("; recording state locked");
+        }
+    }
+    std::printf("\n");
+}
+
 void Scheduler::PopPendingOperations() {
     if (num_pending_ops.load(std::memory_order_acquire) == 0) {
         return; // every draw comes here

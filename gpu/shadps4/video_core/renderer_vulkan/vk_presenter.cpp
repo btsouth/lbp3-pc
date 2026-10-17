@@ -11,6 +11,7 @@
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "bbport_game_menu.h"
 #include "bbport_overlay.h"
@@ -156,6 +157,33 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
+    // bbport: what each scheduler and presentation frame has handed to the queue they share,
+    // when a GPU wait is stuck (one batch waiting for something never signalled holds the rest).
+    Semaphore::AddStallReporter([this] {
+        draw_scheduler.ReportState("draw");
+        present_scheduler.ReportState("present");
+        flip_scheduler.ReportState("flip");
+        const vk::Device device = instance.GetDevice();
+        for (const Frame& frame : present_frames) {
+            const char* owner = frame.ready_semaphore == draw_scheduler.GetWorkSemaphore()->Handle()
+                                    ? "draw"
+                                : frame.ready_semaphore == present_scheduler.GetWorkSemaphore()->Handle()
+                                    ? "present"
+                                : frame.ready_semaphore == flip_scheduler.GetWorkSemaphore()->Handle()
+                                    ? "flip"
+                                    : "none";
+            std::printf("  frame %u: ready at %s tick %llu, present fence %s\n", u32(frame.id), owner,
+                        (unsigned long long)frame.ready_tick,
+                        device.getFenceStatus(frame.present_done) == vk::Result::eSuccess
+                            ? "signalled"
+                            : "not signalled");
+        }
+        std::printf("  swapchain: %u images, %s, acquire slot %u, image %u\n",
+                    swapchain.GetImageCount(), vk::to_string(swapchain.GetPresentMode()).c_str(),
+                    swapchain.GetFrameIndex(), swapchain.GetImageIndex());
+        rasterizer->GetBufferCache().ReportArenaBinds();
+        Breadcrumbs::ReportStuck("a GPU wait made no progress for 3 s");
+    });
 }
 
 Presenter::~Presenter() {

@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <thread>
 #include <queue>
 #include "common/types.h"
@@ -45,6 +46,10 @@ public:
 
     /// Waits for a tick to be hit on the GPU
     void Wait(u64 tick);
+
+    /// bbport: printed once when a wait has made no progress for 3 s (the wait goes on): what
+    /// each part of the renderer has handed to the GPU, to tell which queued work blocks it.
+    static void AddStallReporter(std::function<void()> reporter);
 
 protected:
     const Instance& instance;

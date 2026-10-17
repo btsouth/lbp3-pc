@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdio>
 #include <limits>
+#include <mutex>
+#include <vector>
 #include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
@@ -11,6 +14,20 @@
 namespace Vulkan {
 
 constexpr u64 WAIT_TIMEOUT = std::numeric_limits<u64>::max();
+constexpr u64 STALL_TIMEOUT = 3'000'000'000; ///< ns without progress before the stall report
+
+namespace {
+std::mutex stall_mutex;
+std::vector<std::function<void()>>& StallReporters() {
+    static std::vector<std::function<void()>> reporters;
+    return reporters;
+}
+} // namespace
+
+void Semaphore::AddStallReporter(std::function<void()> reporter) {
+    std::scoped_lock lk{stall_mutex};
+    StallReporters().push_back(std::move(reporter));
+}
 
 Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
     const vk::StructureChain semaphore_chain = {
@@ -66,11 +83,36 @@ void Semaphore::Wait(u64 tick) {
         .pValues = &tick,
     };
 
-    // bbport: a lost device ends the wait with a report instead of a silent endless loop.
+    // bbport: a lost device ends the wait with a report instead of a silent endless loop. A wait
+    // stuck for 3 s prints what is queued once per process (it then goes on waiting).
+    static std::atomic_flag stall_reported = ATOMIC_FLAG_INIT;
+    bool watch = !stall_reported.test();
     while (true) {
-        const vk::Result result = instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT);
+        const vk::Result result =
+            instance.GetDevice().waitSemaphores(&wait_info, watch ? STALL_TIMEOUT : WAIT_TIMEOUT);
         if (result == vk::Result::eSuccess) {
             break;
+        }
+        if (result == vk::Result::eTimeout && watch) {
+            watch = false;
+            if (!stall_reported.test_and_set()) {
+                const auto [counter_result, counter] =
+                    instance.GetDevice().getSemaphoreCounterValue(*semaphore);
+                std::printf("GPU stall: waited 3 s for tick %llu of timeline %p (the GPU is at "
+                            "%llu); what was handed to the GPU:\n",
+                            (unsigned long long)tick, static_cast<void*>(Handle()),
+                            (unsigned long long)counter);
+                std::vector<std::function<void()>> reporters;
+                {
+                    std::scoped_lock lk{stall_mutex};
+                    reporters = StallReporters();
+                }
+                for (const auto& reporter : reporters) {
+                    reporter();
+                }
+                std::fflush(stdout);
+            }
+            continue;
         }
         if (result == vk::Result::eErrorDeviceLost) {
             Breadcrumbs::ReportDeviceLost("waiting for a submission");
