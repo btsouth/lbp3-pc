@@ -540,6 +540,21 @@ int main(int argc, char **argv) {
         t[8] = 0x48; t[9] = 0xb8; memcpy(t + 10, &handler, 8);
         t[18] = 0xff; t[19] = 0xe0;
     }
+    /* BB_REPORT_IMPORTS=1 (porting other games): how each import is served, once, before the
+     * game runs: "host" (the runtime or the GPU library), "native" (a linked module's export)
+     * or "MISSING" (a trap: STOP, or 0 with BB_STUB_IMPORTS=1). */
+    const char *report_env = getenv("BB_REPORT_IMPORTS");
+    if (report_env && !strcmp(report_env, "1")) {
+        uint64_t missing = 0;
+        for (uint64_t i = 0; i < import_count; ++i) {
+            int data = 0;
+            for (uint64_t r = 0; r < nr; ++r) if (relocs[r].kind && relocs[r].value == i) { data = relocs[r].kind == 2; break; }
+            const char *how = runtime_resolve(names[i], data) ? "host" : native_libc && bindings[i] ? "native" : "MISSING";
+            missing += how[0] == 'M';
+            printf("IMPORT: %-7s %s %s\n", how, names[i], runtime_import_name(names[i]));
+        }
+        printf("IMPORT: %" PRIu64 " of %" PRIu64 " imports missing\n", missing, import_count);
+    }
     for (uint64_t i = 0; i < nr; ++i) {
         uintptr_t value = relocs[i].kind == 2 ? (uintptr_t)(data_traps + page_size * relocs[i].value + relocs[i].addend)
                         : relocs[i].kind == 1 ? (uintptr_t)(traps + 32 * relocs[i].value)
