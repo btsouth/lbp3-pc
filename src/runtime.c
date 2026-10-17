@@ -49,6 +49,16 @@ static ABI void guest_set_heap_api(void **api) {
     puts("Runtime: application heap API registered");
 }
 void **runtime_application_heap_api(void) { return application_heap_api; }
+/* sceLibcHeapGetTraceInfo (libSceLibcInternalExt): newer libc.prx builds (Ratchet & Clank's)
+ * read the heap tracer's tables at startup. No tracer: an empty mask and state table. */
+typedef struct { uint64_t size; uint32_t flag, get_segment_info; uint64_t *atomic_id_mask, *mstate_table; } HeapTraceInfo;
+static ABI int32_t guest_heap_trace_info(HeapTraceInfo *info) {
+    static uint64_t atomic_id_mask, mstate_table[64];
+    info->get_segment_info=0;
+    info->atomic_id_mask=&atomic_id_mask;
+    info->mstate_table=mstate_table;
+    return 0;
+}
 void runtime_set_module_tls(uint64_t module, const void *data, uint64_t filesz, uint64_t memsz) {
     if (module<2 || module>=TLS_MODULES) { fputs("STOP: unsupported TLS module id\n",stderr); exit(21); }
     tls_modules[module].data=data; tls_modules[module].filesz=filesz; tls_modules[module].memsz=memsz;
@@ -228,6 +238,7 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (!strcmp(name, "vNe1w4diLCs#p#J")) return (uintptr_t)guest_tls_get_addr;
     if (!strcmp(name, "959qrazPIrg#p#J")) return (uintptr_t)guest_procparam;
     if (!strcmp(name, "p5EcQeEeJAE#p#J")) return (uintptr_t)guest_set_heap_api;
+    if (!strcmp(name, "NWtTN10cJzE#libSceLibcInternalExt")) return (uintptr_t)guest_heap_trace_info;
     uintptr_t mutex = runtime_mutex_resolve(name);
     if (mutex) return mutex;
     uintptr_t thread = runtime_thread_resolve(name);
