@@ -1806,7 +1806,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const auto& fetch_shader = pipeline->GetFetchShader();
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
 
-    const vk::Pipeline handle = pipeline->Handle();
+    // bbport: the handle is read when recorded: a graphics pipeline may still be compiling.
+    const Pipeline* bound_pipeline = pipeline;
     const u32 num_indices = regs.num_indices;
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
@@ -1820,7 +1821,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     };
     const bool skip_draw = SkipDrawFor(vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, bound_pipeline->Handle());
         if (skip_draw) {
         } else if (is_indexed) {
             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
@@ -1943,7 +1944,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
 
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
                                  : sizeof(VkDrawIndirectCommand)));
-    const vk::Pipeline handle = pipeline->Handle();
+    // bbport: the handle is read when recorded: a graphics pipeline may still be compiling.
+    const Pipeline* bound_pipeline = pipeline;
     const vk::Buffer args = buffer->Handle();
     const u64 args_offset = base;
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
@@ -1961,7 +1963,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     const bool skip_draw = SkipDrawFor(vs_crumb ? vs_crumb->pgm_hash : 0,
                                        ps_crumb ? ps_crumb->pgm_hash : 0);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, bound_pipeline->Handle());
         if (skip_draw) {
         } else if (is_indexed) {
             if (counts) {
@@ -2082,7 +2084,8 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});
 
-    const vk::Pipeline handle = pipeline->Handle();
+    // bbport: the handle is read when recorded: a graphics pipeline may still be compiling.
+    const Pipeline* bound_pipeline = pipeline;
     const u32 dim_x = cs_program.dim_x, dim_y = cs_program.dim_y, dim_z = cs_program.dim_z;
     if (FrameCapture::Active()) {
         FrameCapture::Dispatch(cs.pgm_hash, dim_x, dim_y, dim_z);
@@ -2094,7 +2097,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         .count = {dim_x, dim_y, dim_z},
     };
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, bound_pipeline->Handle());
         cmdbuf.dispatch(dim_x, dim_y, dim_z);
     });
     DebugState.IncDispatch();
@@ -2153,7 +2156,8 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});
 
-    const vk::Pipeline handle = pipeline->Handle();
+    // bbport: the handle is read when recorded: a graphics pipeline may still be compiling.
+    const Pipeline* bound_pipeline = pipeline;
     const vk::Buffer raw_args = buffer->Handle();
     const u64 raw_offset = base;
     const auto& cs_crumb = pipeline->GetStage(Shader::SwStage::Compute);
@@ -2168,7 +2172,7 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     };
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         Breadcrumbs::CopyArgs(cmdbuf, raw_args, raw_offset, args_slot); // what the game wrote
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, bound_pipeline->Handle());
         cmdbuf.dispatchIndirect(args, args_offset);
     });
     DebugState.IncDispatch();

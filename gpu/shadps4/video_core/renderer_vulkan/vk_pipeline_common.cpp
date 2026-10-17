@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <span>
 
 #include <boost/container/small_vector.hpp>
@@ -21,6 +22,25 @@ Pipeline::Pipeline(const Instance& instance_, Scheduler& scheduler_, DescriptorH
       is_compute{is_compute_} {}
 
 Pipeline::~Pipeline() = default;
+
+std::atomic<u64> g_bb_pipeline_wait_ns;
+
+void Pipeline::WaitHandle() const {
+    const auto start = std::chrono::steady_clock::now();
+    std::unique_lock lk{handle_mutex};
+    handle_cv.wait(lk, [&] { return !handle_pending.load(std::memory_order_acquire); });
+    g_bb_pipeline_wait_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count());
+}
+
+void Pipeline::PublishHandle() {
+    {
+        std::scoped_lock lk{handle_mutex};
+        handle_pending.store(false, std::memory_order_release);
+    }
+    handle_cv.notify_all();
+}
 
 
 void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data,
