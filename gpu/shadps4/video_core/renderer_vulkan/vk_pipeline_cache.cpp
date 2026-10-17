@@ -697,9 +697,12 @@ void PipelineCache::EnsureCompiler() {
     if (compiler) {
         return;
     }
+    // Half the hardware threads, 2 to 8: they only work in bursts of new pipelines. LBP3's
+    // first area brings ~300 (13 s of driver compile on Intel ANV, cold): 3 threads missed the
+    // game's 1 s flip watchdog, 8 made it.
     const char* env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
     const u32 threads = env && *env ? u32(std::strtoul(env, nullptr, 10))
-                                    : std::clamp(std::thread::hardware_concurrency() / 4, 1u, 4u);
+                                    : std::clamp(std::thread::hardware_concurrency() / 2, 2u, 8u);
     compiler = std::make_unique<PipelineCompiler>(std::max(threads, 1u));
     std::printf("GPU: new graphics pipelines compile on %u threads (BB_ASYNC_PIPELINES=0: on the "
                 "GPU thread, the game waits)\n",
