@@ -316,13 +316,19 @@ def compile_external(selected, segments):
 # Ratchet & Clank (2016), CUSA01073 1.00: the game paces its frames itself, every swap interval x
 # vblank period (2 x 1/59.94 s: 30 FPS) of its display object, a value set once at start
 # (vaddr 0x1722f6e: mov [r14+0x1c],eax from its configuration). The patch stores the preset's
-# interval there instead; its game logic follows the measured frame time. "uncap" (interval 0)
+# interval there instead. The simulation clock also has a 1/60 s floor (below). "uncap" (interval 0)
 # leaves pacing to the port (BB_FPS_LIMIT). The neighbouring store of the unused fallback
 # interval (only read when the flag set right after is clear) makes room for the constant.
 RATCHET_IDS={'CUSA01073'}
 RATCHET_FPS={'30':None,'60':1.0,'90':59.94/90,'120':59.94/120,'uncap':0.0}
 RATCHET_INTERVAL_SITE=0x1722f6e
 RATCHET_INTERVAL_CODE=bytes.fromhex('4189461c8b4628be080000004c89ff41894620')
+# Clock constructor: vmaxsd xmm1,xmm0,[1/60]. At 120 FPS this forces every update to
+# advance at least 16.67 ms. Keep the configured/pacing minimum in xmm0, without that
+# extra 60 Hz floor. The maximum-delta clamp and the clock's time scale stay intact.
+RATCHET_CLOCK_SITE=0x16991f8
+RATCHET_CLOCK_CODE=bytes.fromhex('c5fb5f0dd05b3c01')
+RATCHET_CLOCK_PATCH=bytes.fromhex('c5f928c890909090') # vmovapd xmm1,xmm0; nop x4
 
 
 def ratchet_fps_writes(fps,eboot):
@@ -332,18 +338,24 @@ def ratchet_fps_writes(fps,eboot):
     phoff,=struct.unpack_from('<Q',eboot,0x20)
     phentsize,phnum=struct.unpack_from('<HH',eboot,0x36)
     file_offset=None
+    clock_offset=None
     for i in range(phnum):
         kind,_,off,vaddr,_,filesz,_,_=struct.unpack_from('<IIQQQQQQ',eboot,phoff+i*phentsize)
-        if kind==1 and vaddr<=RATCHET_INTERVAL_SITE<vaddr+filesz:
+        if kind==1 and vaddr<=RATCHET_INTERVAL_SITE and RATCHET_INTERVAL_SITE+len(RATCHET_INTERVAL_CODE)<=vaddr+filesz:
             file_offset=off+RATCHET_INTERVAL_SITE-vaddr
+        if kind==1 and vaddr<=RATCHET_CLOCK_SITE and RATCHET_CLOCK_SITE+len(RATCHET_CLOCK_CODE)<=vaddr+filesz:
+            clock_offset=off+RATCHET_CLOCK_SITE-vaddr
     if file_offset is None or eboot[file_offset:file_offset+len(RATCHET_INTERVAL_CODE)]!=RATCHET_INTERVAL_CODE:
         print('Patches: this Ratchet & Clank executable differs from 1.00; frame rate left at 30')
+        return []
+    if clock_offset is None or eboot[clock_offset:clock_offset+len(RATCHET_CLOCK_CODE)]!=RATCHET_CLOCK_CODE:
+        print('Patches: this Ratchet & Clank clock differs from 1.00; frame rate left at 30')
         return []
     code=(bytes.fromhex('41c7461c')+struct.pack('<f',interval)  # mov dword [r14+0x1c],interval
           +bytes.fromhex('6a085e')                               # push 8; pop rsi (mov esi,8)
           +bytes.fromhex('4c89ff'))                              # mov rdi,r15
     code+=b'\x90'*(len(RATCHET_INTERVAL_CODE)-len(code))
-    return [(RATCHET_INTERVAL_SITE,code)]
+    return [(RATCHET_INTERVAL_SITE,code),(RATCHET_CLOCK_SITE,RATCHET_CLOCK_PATCH)]
 
 
 def main():

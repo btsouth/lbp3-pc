@@ -193,5 +193,45 @@ class IntelTonemapTests(unittest.TestCase):
         self.assertIn(patches.INTEL_TONEMAP, names)
 
 
+class RatchetClockTests(unittest.TestCase):
+    def executable(self):
+        # Two small PT_LOAD segments make virtual/file address translation explicit.
+        elf = bytearray(0x300)
+        struct.pack_into('<Q', elf, 0x20, 0x40)
+        struct.pack_into('<HH', elf, 0x36, 56, 2)
+        for index, (site, code) in enumerate((
+                (patches.RATCHET_INTERVAL_SITE, patches.RATCHET_INTERVAL_CODE),
+                (patches.RATCHET_CLOCK_SITE, patches.RATCHET_CLOCK_CODE))):
+            offset = 0x100 + index * 0x100
+            struct.pack_into('<IIQQQQQQ', elf, 0x40 + index * 56,
+                             1, 5, offset, site, site, len(code), len(code), 0x1000)
+            elf[offset:offset+len(code)] = code
+        return elf
+
+    def test_original_preset_is_untouched(self):
+        self.assertEqual(patches.ratchet_fps_writes('30', self.executable()), [])
+
+    def test_high_rates_patch_pacing_and_clock_together(self):
+        for fps in ('60', '90', '120', 'uncap'):
+            with self.subTest(fps=fps):
+                writes = dict(patches.ratchet_fps_writes(fps, self.executable()))
+                self.assertEqual(set(writes), {patches.RATCHET_INTERVAL_SITE,
+                                              patches.RATCHET_CLOCK_SITE})
+                self.assertEqual(writes[patches.RATCHET_CLOCK_SITE],
+                                 bytes.fromhex('c5f928c890909090'))
+
+    def test_either_changed_instruction_rejects_both_writes(self):
+        for offset in (0x100, 0x200):
+            with self.subTest(offset=offset):
+                elf = self.executable()
+                elf[offset] ^= 1
+                self.assertEqual(patches.ratchet_fps_writes('120', elf), [])
+
+    def test_truncated_clock_segment_rejects_both_writes(self):
+        elf = self.executable()
+        struct.pack_into('<Q', elf, 0x40+56+32, len(patches.RATCHET_CLOCK_CODE)-1)
+        self.assertEqual(patches.ratchet_fps_writes('120', elf), [])
+
+
 if __name__ == '__main__':
     unittest.main()
