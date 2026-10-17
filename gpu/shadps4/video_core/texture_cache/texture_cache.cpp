@@ -102,6 +102,11 @@ void TextureCache::ProcessDownloadImages() {
     for (const ImageId image_id : download_images) {
         DownloadImageMemory(image_id, !async);
     }
+    if (async && !download_images.empty()) {
+        // Submitted now: the copy's deferred write waits for this tick, and the game may wait
+        // for the copy before it sends more work.
+        scheduler.Flush();
+    }
     download_images.clear();
 }
 
