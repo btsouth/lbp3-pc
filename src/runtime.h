@@ -105,4 +105,10 @@ void runtime_savedata_configure(const char *title);
 uintptr_t runtime_savedata_resolve(const char *name);
 void runtime_savedata_report(void);
 void runtime_thread_attach_host(const char *name);
+
+/* Optional local datagram transport. */
+uintptr_t runtime_udp_resolve(const char *name);
+int runtime_file_adopt(int host);
+int runtime_file_host_fd(int fd);
+
 #endif

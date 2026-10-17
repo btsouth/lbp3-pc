@@ -648,7 +648,9 @@ static const RuntimeExport exports[]={
 };
 uintptr_t runtime_services_resolve(const char *name) {
     const uintptr_t online=runtime_net_resolve(name); /* BB_ONLINE=1: the online module first */
-    return online ? online : RUNTIME_LOOKUP(exports,name);
+    if (online) return online;
+    uintptr_t udp=runtime_udp_resolve(name);
+    return udp ? udp : RUNTIME_LOOKUP(exports,name);
 }
 #else
 uintptr_t runtime_services_resolve(const char *name) { (void)name; return 0; }

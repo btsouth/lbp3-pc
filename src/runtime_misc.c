@@ -127,7 +127,10 @@ static const RuntimeExport exports[]={
     {"send",socket_offline}, {"recv",socket_offline}, {"sendto",socket_offline},
     {"recvfrom",socket_offline}, {"setsockopt",socket_offline}, {"shutdown",socket_offline},
 };
-uintptr_t runtime_misc_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
+uintptr_t runtime_misc_resolve(const char *name) {
+    uintptr_t udp=runtime_udp_resolve(name);
+    return udp ? udp : RUNTIME_LOOKUP(exports,name);
+}
 #else
 uintptr_t runtime_misc_resolve(const char *name) { (void)name; return 0; }
 #endif
