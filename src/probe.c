@@ -602,6 +602,19 @@ int main(int argc, char **argv) {
             if (!executable) fail("native function is not executable");
         }
     }
+#ifndef _WIN32
+    const char *image_base_env=getenv("BB_IMAGE_BASE");
+    if (image_base_env && *image_base_env) {
+        char *end;
+        uint64_t base=strtoull(image_base_env,&end,0);
+        if (*end || base<65536 || base%page_size || base>UINT64_C(0x10000000000)-round_page(size))
+            fail("invalid BB_IMAGE_BASE (aligned guest address required)");
+        image=mmap((void *)(uintptr_t)base,round_page(size),PROT_READ|PROT_WRITE,
+                   MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+        if (image==MAP_FAILED) fail("BB_IMAGE_BASE is unavailable (existing mappings preserved)");
+        printf("Image base: %#" PRIx64 " (BB_IMAGE_BASE)\n",base);
+    } else
+#endif
     image = allocate(round_page(size));
     runtime_sse4a_init((uintptr_t)image);
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
