@@ -879,14 +879,15 @@ public:
     /// Copies `data` into recording storage that lives until the command that uses it has
     /// been recorded (the same chunk). With threaded recording off, returns `data` itself.
     template <typename T>
-    std::span<const T> RecordData(std::span<const T> data) {
+    std::span<const T> RecordData(std::span<const T> data,
+                                  std::source_location where = std::source_location::current()) {
         ProducerScope producer{*this, "RecordData"};
         if (!IsRecordingDeferred() || data.empty()) {
             return data;
         }
         // Room for the data and the command that follows it, so both stay in one chunk.
         const size_t bytes = data.size_bytes();
-        ReserveRecordData(bytes + alignof(T));
+        ReserveRecordData(bytes + alignof(T), where);
         auto* dst = static_cast<T*>(CurrentChunk().Allocate(bytes, alignof(T)));
         std::memcpy(dst, data.data(), bytes);
         return {dst, data.size()};
