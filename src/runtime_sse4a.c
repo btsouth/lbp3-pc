@@ -117,8 +117,9 @@ static int patch_site(uint8_t *site, unsigned size, const uint8_t *target) {
 int runtime_sse4a_fault(void *context) {
     ucontext_t *uc = context;
     uint8_t *b = (uint8_t *)uc->uc_mcontext.gregs[REG_RIP];
-    /* Patched by another thread after this one trapped there: run the jump. */
-    if (patched && (b[0] == 0xe9 || (b[0] == 0xeb && b[1] == 0xfe))) return 1;
+    /* Being patched or patched by another thread after this one trapped there (a jump never
+     * raises SIGILL itself): run the jump, or spin on the jump-to-self until it is complete. */
+    if (patching && (b[0] == 0xe9 || (b[0] == 0xeb && b[1] == 0xfe))) return 1;
     if (!uc->uc_mcontext.fpregs || (b[0] != 0x66 && b[0] != 0xf2)) return 0;
     unsigned i = 1, rex = 0;
     if ((b[1] & 0xf0) == 0x40) { rex = b[1]; i = 2; }
