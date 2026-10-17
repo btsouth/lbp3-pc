@@ -265,7 +265,10 @@ static ABI int32_t np_register(void *cb,void *arg) { (void)cb; (void)arg; return
 static ABI void np_register_void(void *cb,void *arg) { (void)cb; (void)arg; }
 static ABI int32_t np_request(const void *param) { (void)param; return new_id(); }
 static ABI int32_t np_request_ctx(int32_t ctx,const void *param) { (void)ctx; (void)param; return new_id(); }
-static ABI int32_t np_poll(int32_t request,int32_t *result) { (void)request; if (result) *result=NP_SIGNED_OUT; return 0; }
+static int np_signed_in(void);
+/* An NP request is finished at once: signed out it failed; signed in (BB_NP_SIGNED_IN=1) PSN
+ * answered the availability check (the requests that need a server fail when they are made). */
+static ABI int32_t np_poll(int32_t request,int32_t *result) { (void)request; if (result) *result=np_signed_in() ? 0 : NP_SIGNED_OUT; return 0; }
 /* Online IDs compare as strings of up to 16 characters (what follows the terminator does not
  * count); NP IDs also compare their opt and reserved bytes (SceNpId: handle 20, opt 8, reserved 8). */
 static ABI int32_t np_compare_online(const char *a,const char *b) {
