@@ -343,6 +343,12 @@ def main():
         size=render_size(settings)
         if size: print(f'{size[0]}x{size[1]}')
         return
+    # The built-in patches are Bloodborne 1.09 addresses: another game gets none of them.
+    title=json.loads((a.out/'analysis.json').read_text(encoding='utf-8'))['sfo'].get('TITLE_ID','')
+    if title not in BLOODBORNE_IDS:
+        (a.out/'patches.bin').write_bytes(struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,0))
+        print(f'Patches: none ({title} is not Bloodborne)')
+        return
     names=FPS_PRESETS[a.fps]+[n.strip() for n in a.extra.split(';') if n.strip()]
     names+=[n for n in effect_patches(read_settings(a.settings)) if n not in names]
     if intel_tonemap_fix() and INTEL_TONEMAP not in names:

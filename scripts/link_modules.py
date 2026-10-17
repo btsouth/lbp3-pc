@@ -17,6 +17,7 @@ from pathlib import Path
 import struct
 from prepare import parse_self, span, unpack
 from link_libc import encode_id
+from respell import respell
 
 DEFAULT_MODULES = ('libc.prx', 'libSceFios2.prx')
 FS_LOAD = bytes.fromhex('64488b042500000000')  # mov rax, fs:[0]
@@ -206,6 +207,10 @@ def link(game, out, module_names=DEFAULT_MODULES):
             bindings.append((index, found[0], found[1]))
         else:
             unresolved.append(names[index])
+
+    # The host runtime matches names in Bloodborne's spelling (scripts/respell.py).
+    names = [respell(name, main['libraries'], main['modules']) for name in names]
+    unresolved = [respell(name, main['libraries'], main['modules']) for name in unresolved]
 
     main_tls = next((p for p in main['ph'] if p['type'] == 7), None)
     main_tls_values = (main_tls['vaddr'], main_tls['filesz'], main_tls['memsz'], main_tls['align']) if main_tls else (0, 0, 0, 0)

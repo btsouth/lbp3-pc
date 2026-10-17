@@ -128,6 +128,19 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
     fflush(NULL);
     _exit(20); /* no destructors: GPU, audio and guest threads are still running */
 }
+/* BB_STUB_IMPORTS=1 (porting other games): an import the runtime does not provide returns 0,
+ * said once per import, instead of stopping at the first one. */
+static unsigned char *stub_seen;
+static ABI uint64_t stubbed(uint32_t id, uintptr_t argument) {
+    if (id >= import_count) fail("bad import trap index");
+    if (!__atomic_exchange_n(&stub_seen[id], 1, __ATOMIC_RELAXED)) {
+        uintptr_t caller=(uintptr_t)__builtin_return_address(0)-(uintptr_t)image;
+        printf("STUB: %s (index %u) -> 0; first argument 0x%" PRIxPTR ", caller +0x%" PRIxPTR "\n",
+               names[id], id, argument, caller);
+        fflush(stdout);
+    }
+    return 0;
+}
 #ifndef _WIN32
 /* enter_on_stack(entry, arg0, arg1, stack_top): call entry(arg0,arg1) on a new stack. */
 void enter_on_stack(void *entry, void *arg0, void *arg1, void *top);
@@ -512,6 +525,8 @@ int main(int argc, char **argv) {
         if (bbgpu_init(&gpu)) fail("GPU initialization failed");
         printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,bbgpu_symbol_count());
     }
+    const char *stub_env = getenv("BB_STUB_IMPORTS");
+    if (stub_env && !strcmp(stub_env, "1")) stub_seen = calloc(import_count + 1, 1);
     unsigned char *traps = allocate(round_page((import_count + 1) * 32));
     unsigned char *data_traps = allocate((import_count + 1) * page_size);
     protect(data_traps, (import_count + 1) * page_size, 0);
@@ -519,7 +534,7 @@ int main(int argc, char **argv) {
         unsigned char *t = traps + i * 32;
         /* SysV: mov edi, index; movabs rax, handler; jmp rax. No fake return values. */
         uint32_t index = (uint32_t)i;
-        uintptr_t handler = (uintptr_t)unresolved;
+        uintptr_t handler = stub_seen ? (uintptr_t)stubbed : (uintptr_t)unresolved;
         t[0] = 0x48; t[1] = 0x89; t[2] = 0xfe; /* mov rsi,rdi: preserve arg0 */
         t[3] = 0xbf; memcpy(t + 4, &index, 4);
         t[8] = 0x48; t[9] = 0xb8; memcpy(t + 10, &handler, 8);
