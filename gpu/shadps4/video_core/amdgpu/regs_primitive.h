@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include "common/types.h"
 
 namespace AmdGpu {
@@ -149,12 +150,15 @@ struct Scissor {
         return std::max(s16(0), value);
     }
 
+    // bbport: an inverted rectangle (top left past bottom right) is empty, as on the GPU; the
+    // plain difference wrapped to about 4 billion, which Vulkan forbids and drivers may treat
+    // as no scissor at all.
     u32 GetWidth() const {
-        return static_cast<u32>(Clamp(bottom_right_x) - Clamp(top_left_x));
+        return static_cast<u32>(std::max(Clamp(bottom_right_x) - Clamp(top_left_x), 0));
     }
 
     u32 GetHeight() const {
-        return static_cast<u32>(Clamp(bottom_right_y) - Clamp(top_left_y));
+        return static_cast<u32>(std::max(Clamp(bottom_right_y) - Clamp(top_left_y), 0));
     }
 };
 

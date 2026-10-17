@@ -4430,17 +4430,21 @@ void Rasterizer::UpdateViewportScissorState() const {
         }
         if (target_scale[0] != 1.0f || target_scale[1] != 1.0f) {
             const auto scale = [](s32 v, float f) { return s32(std::lround(float(v) * f)); };
-            const s32 x0 = scale(vp_scsr.top_left_x, target_scale[0]);
-            const s32 y0 = scale(vp_scsr.top_left_y, target_scale[1]);
-            const s32 x1 = scale(vp_scsr.top_left_x + s32(vp_scsr.GetWidth()), target_scale[0]);
-            const s32 y1 = scale(vp_scsr.top_left_y + s32(vp_scsr.GetHeight()), target_scale[1]);
+            const s32 left = AmdGpu::Scissor::Clamp(vp_scsr.top_left_x);
+            const s32 top = AmdGpu::Scissor::Clamp(vp_scsr.top_left_y);
+            const s32 x0 = scale(left, target_scale[0]);
+            const s32 y0 = scale(top, target_scale[1]);
+            const s32 x1 = scale(left + s32(vp_scsr.GetWidth()), target_scale[0]);
+            const s32 y1 = scale(top + s32(vp_scsr.GetHeight()), target_scale[1]);
             scissors.push_back({
                 .offset = {x0, y0},
                 .extent = {u32(std::max(x1 - x0, 0)), u32(std::max(y1 - y0, 0))},
             });
         } else {
+            // Vulkan needs a non-negative offset; the size already starts at the clamped corner.
             scissors.push_back({
-                .offset = {vp_scsr.top_left_x, vp_scsr.top_left_y},
+                .offset = {AmdGpu::Scissor::Clamp(vp_scsr.top_left_x),
+                           AmdGpu::Scissor::Clamp(vp_scsr.top_left_y)},
                 .extent = {vp_scsr.GetWidth(), vp_scsr.GetHeight()},
             });
         }
