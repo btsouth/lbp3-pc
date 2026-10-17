@@ -231,6 +231,17 @@ static ABI int32_t np_get_np_id(int32_t user,char *id) { /* SceNpId: online ID, 
 }
 /* PSN itself answers (signed in: available); only the game's own servers are gone. */
 static ABI int32_t np_availability(void) { return np_signed_in() ? 0 : NP_SIGNED_OUT; }
+/* sceNpAuth: signed in, PSN issues an authorization code (a placeholder: no server ever checks
+ * it, the game's own servers are unreachable). */
+static ABI int32_t np_auth_request(void) { return np_signed_in() ? new_id() : NP_SIGNED_OUT; }
+static ABI int32_t np_auth_code(int32_t request,const void *param,char *code,int32_t *issuer) {
+    (void)request; (void)param;
+    if (!np_signed_in()) return NP_SIGNED_OUT;
+    if (!code) return NP_INVALID_ARGUMENT;
+    memset(code,0,136); strcpy(code,"bbportofflinecode"); /* SceNpAuthorizationCode: 128+1 chars, 7 padding */
+    if (issuer) *issuer=1;
+    return 0;
+}
 static ABI int32_t np_account_country(int32_t user,char *country) { /* SceNpCountryCode: 2 + NUL */
     if (!country) return NP_INVALID_ARGUMENT;
     if (!np_signed_in()) return NP_SIGNED_OUT;
@@ -545,8 +556,8 @@ static const RuntimeExport exports[]={
     {"sceNpGetParentalControlInfo",np_signed_out}, {"sceNpCheckPlus",np_signed_out},
     {"sceNpGetGamePresenceStatus",np_signed_out},
     {"sceNpCmpNpId",np_compare}, {"sceNpCmpOnlineId",np_compare_online},
-    {"sceNpAuthCreateAsyncRequest",np_request}, {"sceNpAuthDeleteRequest",ok_void},
-    {"sceNpAuthPollAsync",np_poll}, {"sceNpAuthGetAuthorizationCode",np_signed_out},
+    {"sceNpAuthCreateAsyncRequest",np_auth_request}, {"sceNpAuthDeleteRequest",ok_void},
+    {"sceNpAuthPollAsync",np_poll}, {"sceNpAuthGetAuthorizationCode",np_auth_code}, {"sceNpAuthCreateRequest",np_auth_request},
     {"sceNpLookupCreateTitleCtx",np_request}, {"sceNpLookupDeleteTitleCtx",ok_void},
     {"sceNpLookupCreateAsyncRequest",np_request_ctx}, {"sceNpLookupDeleteRequest",ok_void},
     {"sceNpLookupAbortRequest",ok_void}, {"sceNpLookupPollAsync",np_poll}, {"sceNpLookupNpId",np_signed_out},

@@ -100,6 +100,7 @@
 {"gg1d4KsyVVs#runtime","sceMoveTrackerGetWorkingMemorySize"},
 {"F4w2atwG428#runtime","sceMoveTrackerInit"},
 {"3tiBWhkHH3A#runtime","sceMoveTrackerTerm"},
+{"6bwFkosYRQg#runtime","sceNpAuthCreateRequest"},
 {"Ghz9iWDUtC4#runtime","sceNpGetAccountCountry"},
 {"q1cHNfGycLI#runtime","scePadRead"},
 {"clVvL4ZDntw#runtime","scePadSetMotionSensorState"},
