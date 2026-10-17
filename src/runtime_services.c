@@ -104,6 +104,16 @@ static ABI int32_t *net_errno_loc(void) { return &net_errno; }
 static ABI int32_t net_pool_create(const char *name,int size,int flags) { (void)name; (void)size; (void)flags; return new_id(); }
 static ABI int32_t net_pool_destroy(int id) { (void)id; return 0; }
 static ABI int32_t net_unreachable(void) { net_errno=51; return NET_ENETUNREACH; }
+/* No socket ever becomes ready: an epoll set accepts what it is given and a wait returns no
+ * events once its timeout passes (a game's select() loop must not spin); -1 waits a while. */
+static ABI int32_t net_epoll_control(int id,int op,int socket,void *event) { (void)id; (void)op; (void)socket; (void)event; return 0; }
+static ABI int32_t net_epoll_wait(int id,void *events,int count,int32_t timeout_us) {
+    (void)id; (void)events; (void)count;
+    struct timespec t={.tv_sec=0,.tv_nsec=100000000};
+    if (timeout_us>=0) { t.tv_sec=timeout_us/1000000; t.tv_nsec=(long)(timeout_us%1000000)*1000; }
+    nanosleep(&t,NULL);
+    return 0;
+}
 static ABI int32_t net_epoll_create(const char *name,int flags) { (void)name; (void)flags; return new_id(); }
 static ABI int32_t net_epoll_destroy(int id) { (void)id; return 0; }
 static ABI int32_t net_resolver_create(const char *name,int pool,int flags) { (void)name; (void)pool; (void)flags; return new_id(); }
@@ -406,7 +416,7 @@ static const RuntimeExport exports[]={
     {"sceNetSetsockopt",net_unreachable}, {"sceNetGetsockopt",net_unreachable},
     {"sceNetGetsockname",net_unreachable}, {"sceNetShutdown",net_unreachable},
     {"sceNetSocketClose",net_unreachable}, {"sceNetSocketAbort",net_unreachable},
-    {"sceNetEpollControl",net_unreachable}, {"sceNetEpollWait",net_unreachable}, {"sceNetEpollAbort",net_unreachable},
+    {"sceNetEpollControl",net_epoll_control}, {"sceNetEpollWait",net_epoll_wait}, {"sceNetEpollAbort",net_unreachable},
     {"sceNetResolverStartNtoa",net_unreachable}, {"sceNetResolverStartAton",net_unreachable},
     {"sceNetCtlGetState",netctl_state}, {"sceNetCtlGetInfo",netctl_info},
     {"sceNetCtlRegisterCallback",netctl_register}, {"sceNetCtlCheckCallback",netctl_check},
