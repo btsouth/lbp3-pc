@@ -112,6 +112,24 @@ static void protect(void *p, size_t size, unsigned flags) {
     if (mprotect(p, size, mode)) fail("mprotect failed");
 #endif
 }
+/* Guest call chain: the PS4 SDK compiles with frame pointers, so follow rbp (16 frames, only
+ * while the saved rbp points up the same stack and return addresses fall in the image).
+ * Async-signal-safe (the fault handler uses it). */
+void runtime_guest_frames(uintptr_t rbp, uintptr_t rsp) {
+    char line[96], thread[32] = "?";
+    pthread_getname_np(pthread_self(), thread, sizeof(thread));
+    snprintf(line, sizeof(line), "  thread %s; guest frames:", thread);
+    { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
+    for (int i = 0; i < 16 && rbp >= rsp && rbp - rsp < 0x1000000 && !(rbp & 7); ++i) {
+        uintptr_t next = ((uintptr_t *)rbp)[0], ret = ((uintptr_t *)rbp)[1];
+        if (ret - (uintptr_t)image >= 0x10000000) break;
+        snprintf(line, sizeof(line), " 0x%lx", (unsigned long)(ret - (uintptr_t)image));
+        { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
+        if (next <= rbp) break;
+        rbp = next;
+    }
+    { ssize_t written_=write(2, "\n", 1); (void)written_; }
+}
 static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argument) {
     if (id >= import_count) fail("bad import trap index");
     printf("STOP: first unsupported PS4 import: %s (index %u)\n", names[id], id);
@@ -199,24 +217,8 @@ static void fault(int sig, siginfo_t *info, void *context) {
         if (maps) fclose(maps);
         if (!found) { ssize_t written_=write(2, "none\n", 5); (void)written_; }
     }
-    /* Guest call chain: the PS4 SDK compiles with frame pointers, so follow rbp (16 frames, only
-     * while the saved rbp points up the same stack and return addresses fall in the image). */
-    if (rip - (uintptr_t)image < 0x10000000) {
-        char thread[32] = "?";
-        pthread_getname_np(pthread_self(), thread, sizeof(thread));
-        uintptr_t rbp = (uintptr_t)uc->uc_mcontext.gregs[REG_RBP], rsp = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
-        snprintf(line, sizeof(line), "  thread %s; guest frames:", thread);
-        { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
-        for (int i = 0; i < 16 && rbp >= rsp && rbp - rsp < 0x1000000 && !(rbp & 7); ++i) {
-            uintptr_t next = ((uintptr_t *)rbp)[0], ret = ((uintptr_t *)rbp)[1];
-            if (ret - (uintptr_t)image >= 0x10000000) break;
-            snprintf(line, sizeof(line), " 0x%lx", (unsigned long)(ret - (uintptr_t)image));
-            { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
-            if (next <= rbp) break;
-            rbp = next;
-        }
-        { ssize_t written_=write(2, "\n", 1); (void)written_; }
-    }
+    if (rip - (uintptr_t)image < 0x10000000)
+        runtime_guest_frames((uintptr_t)uc->uc_mcontext.gregs[REG_RBP], (uintptr_t)uc->uc_mcontext.gregs[REG_RSP]);
     /* Host call chain (frames with unwind info; guest frames end it). */
     void *frames[32];
     int depth = backtrace(frames, 32);

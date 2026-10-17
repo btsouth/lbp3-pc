@@ -14,6 +14,7 @@ void runtime_restart(void);
 typedef void (ABI *GuestCallback)(void);
 void runtime_start(uint64_t capabilities);
 uintptr_t runtime_resolve(const char *name, int is_data);
+void runtime_guest_frames(uintptr_t rbp, uintptr_t rsp);
 void runtime_report(void);
 void runtime_finalize(void *dso);
 uintptr_t runtime_mutex_resolve(const char *name);
