@@ -40,6 +40,21 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
     }
 
     if (uses_push_descriptors) {
+        // bbport: a set too large for one recording chunk (Ratchet & Clank binds sets of
+        // thousands of descriptors) is pushed on this thread's command buffer, recording directly.
+        size_t descriptors = 0;
+        for (const auto& write : set_writes) {
+            descriptors += write.descriptorCount;
+        }
+        if (scheduler.IsRecordingDeferred() &&
+            set_writes.size() * sizeof(vk::WriteDescriptorSet) +
+                    descriptors * (sizeof(vk::DescriptorBufferInfo) + sizeof(vk::DescriptorImageInfo) +
+                                   sizeof(vk::BufferView) + 32) +
+                    2048 >
+                64 * 1024) {
+            scheduler.CommandBuffer().pushDescriptorSetKHR(bind_point, layout, 0, set_writes);
+            return;
+        }
         if (!scheduler.IsRecordingDeferred()) {
             scheduler.Record([&](vk::CommandBuffer cmdbuf) {
                 cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, set_writes);
