@@ -1038,9 +1038,24 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
     CompileTimer timer;
+    // bbport BB_SHADER_PROFILE=1: time each translation; slow ones are always reported.
+    static const bool shader_profile = [] {
+        const char* env = std::getenv("BB_SHADER_PROFILE");
+        return env && *env && *env != '0';
+    }();
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    if (shader_profile) {
+        std::printf("GPU: translating %s shader %016llx%s, %zu dwords\n",
+                    fmt::format("{}", info.hw_stage).c_str(), (unsigned long long)info.pgm_hash,
+                    perm_idx != 0 ? " (permutation)" : "", code.size());
+        std::fflush(stdout);
+    }
 
     const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
+    const auto t1 = Clock::now();
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    const auto t2 = Clock::now();
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;
@@ -1052,6 +1067,19 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
         module = CompileSPV(*patch, instance.GetDevice());
     } else {
         module = CompileSPV(spv, instance.GetDevice());
+    }
+
+    const auto t3 = Clock::now();
+    const auto ms = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    if (shader_profile || ms(t0, t3) > 50.0) {
+        std::printf("GPU: %s shader %016llx%s, %zu dwords: translate %.1f ms, SPIR-V %.1f ms, "
+                    "module %.1f ms\n",
+                    fmt::format("{}", info.hw_stage).c_str(), (unsigned long long)info.pgm_hash,
+                    perm_idx != 0 ? " (permutation)" : "", code.size(), ms(t0, t1), ms(t1, t2),
+                    ms(t2, t3));
+        std::fflush(stdout);
     }
 
     RegisterShaderBinary(std::move(spv), info.pgm_hash, perm_idx);

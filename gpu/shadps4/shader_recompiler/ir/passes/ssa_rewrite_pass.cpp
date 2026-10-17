@@ -13,6 +13,10 @@
 //      https://link.springer.com/chapter/10.1007/978-3-642-37051-9_6
 //
 
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 #include "shader_recompiler/ir/basic_block.h"
 #include "shader_recompiler/ir/opcodes.h"
@@ -173,9 +177,12 @@ public:
 
     void ResolveTrivialPhis() {
         auto worklist = std::move(m_pending_phis);
+        stats.phis = worklist.size();
         while (!worklist.empty()) {
             IR::Inst* phi = worklist.back();
             worklist.pop_back();
+            ++stats.pops;
+            stats.max_worklist = std::max(stats.max_worklist, worklist.size() + 1);
 
             if (phi->GetOpcode() == IR::Opcode::Void) {
                 continue;
@@ -209,8 +216,10 @@ public:
                     &*block->PrependNewInst(reinsert_point, UndefOpcode(phi->GetRegTag()))};
             }
 
+            ++stats.removed;
             // Add phi users to worklist since they may have become trivial
             for (const auto& [user, operand] : phi->Uses()) {
+                ++stats.uses_replaced;
                 if (user->GetOpcode() == IR::Opcode::Phi && user != phi) {
                     worklist.push_back(user);
                 }
@@ -220,6 +229,10 @@ public:
             block->Instructions().erase(it);
         }
     }
+
+    struct Stats {
+        size_t phis{}, pops{}, removed{}, uses_replaced{}, max_worklist{};
+    } stats;
 
 private:
     DefTable current_def;
@@ -296,6 +309,8 @@ void VisitInst(Pass& pass, IR::Block* block, IR::Inst& inst) {
 } // Anonymous namespace
 
 void SsaRewritePass(IR::Program& program) {
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
     Pass pass;
     const auto end = program.post_order_blocks.rend();
     for (auto it = program.post_order_blocks.rbegin(); it != end; ++it) {
@@ -304,8 +319,27 @@ void SsaRewritePass(IR::Program& program) {
             VisitInst(pass, block, inst);
         }
     }
+    const auto t1 = Clock::now();
     pass.EvaluatePendingPhis();
+    const auto t2 = Clock::now();
     pass.ResolveTrivialPhis();
+    const auto t3 = Clock::now();
+    // bbport BB_SHADER_PROFILE=1: every run; otherwise only slow ones.
+    static const bool profile = [] {
+        const char* env = std::getenv("BB_SHADER_PROFILE");
+        return env && *env && *env != '0';
+    }();
+    const auto ms = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    if (profile || ms(t0, t3) > 50.0) {
+        const auto& st = pass.stats;
+        std::printf("SSA: %zu blocks, visit %.1f ms, phi operands %.1f ms, trivial phis %.1f ms; "
+                    "%zu phis, %zu popped, %zu removed, %zu uses requeued, worklist max %zu\n",
+                    program.blocks.size(), ms(t0, t1), ms(t1, t2), ms(t2, t3), st.phis, st.pops,
+                    st.removed, st.uses_replaced, st.max_worklist);
+        std::fflush(stdout);
+    }
 }
 
 } // namespace Shader::Optimization
