@@ -319,6 +319,10 @@ def compile_external(selected, segments):
 # interval there instead. The simulation clock also has a 1/60 s floor (below). "uncap" (interval 0)
 # leaves pacing to the port (BB_FPS_LIMIT). The neighbouring store of the unused fallback
 # interval (only read when the flag set right after is clear) makes room for the constant.
+# The period is the 59.94 Hz the port reports, whatever BB_VBLANK_HZ is, and the game waits until
+# (interval - 0.5) periods after the last flip: it counts on flips landing on vblank ticks of the
+# preset's rate. At another vblank rate (240 Hz flips at once) interval 1 waited half a frame and
+# "60" ran at ~68 FPS; there the preset is interval 0 and the port's limiter (ratchet_pacing).
 RATCHET_IDS={'CUSA01073'}
 RATCHET_FPS={'30':None,'60':1.0,'90':59.94/90,'120':59.94/120,'uncap':0.0}
 RATCHET_INTERVAL_SITE=0x1722f6e
@@ -331,8 +335,19 @@ RATCHET_CLOCK_CODE=bytes.fromhex('c5fb5f0dd05b3c01')
 RATCHET_CLOCK_PATCH=bytes.fromhex('c5f928c890909090') # vmovapd xmm1,xmm0; nop x4
 
 
-def ratchet_fps_writes(fps,eboot):
-    interval=RATCHET_FPS[fps]
+def ratchet_pacing(fps,vblank_hz):
+    """(interval, frame limit) for a preset at a vblank rate: the game's own pacing where flips
+    land on ticks of the preset's rate (30 at 60 Hz: the original interval, None), else interval 0
+    and BB_FPS_LIMIT=fps."""
+    if fps=='uncap':
+        return 0.0,0
+    if vblank_hz==(60 if fps=='30' else int(fps)):
+        return RATCHET_FPS[fps],0
+    return 0.0,int(fps)
+
+
+def ratchet_fps_writes(fps,eboot,vblank_hz=None):
+    interval=RATCHET_FPS[fps] if vblank_hz is None else ratchet_pacing(fps,vblank_hz)[0]
     if interval is None:
         return []
     phoff,=struct.unpack_from('<Q',eboot,0x20)
@@ -365,6 +380,9 @@ def main():
     p.add_argument('--xml',type=Path,default=Path(__file__).resolve().parent.parent/'patches/Bloodborne.xml')
     p.add_argument('--fps',choices=sorted(set(FPS_PRESETS)|set(RATCHET_FPS)),default='uncap')
     p.add_argument('--extra',default='',help='additional patch names, separated by ";"')
+    p.add_argument('--vblank-hz',type=int,default=None,help='BB_VBLANK_HZ (Ratchet & Clank pacing)')
+    p.add_argument('--print-frame-limit',action='store_true',
+                   help='print the BB_FPS_LIMIT the preset needs at --vblank-hz (0: none)')
     p.add_argument('--app-version',default='01.09')
     p.add_argument('--out',type=Path,default=Path(__file__).resolve().parent.parent/'out')
     p.add_argument('--settings',type=Path,default=Path(__file__).resolve().parent.parent/'bbport.ini')
@@ -390,8 +408,14 @@ def main():
         return
     # The built-in patches are Bloodborne 1.09 addresses: another game gets none of them.
     title=json.loads((a.out/'analysis.json').read_text(encoding='utf-8'))['sfo'].get('TITLE_ID','')
+    if a.print_frame_limit:
+        limit=0
+        if title in RATCHET_IDS and a.fps in RATCHET_FPS and a.vblank_hz is not None:
+            limit=ratchet_pacing(a.fps,a.vblank_hz)[1]
+        print(limit)
+        return
     if title in RATCHET_IDS:
-        writes=ratchet_fps_writes(a.fps,(a.out/'eboot.elf').read_bytes())
+        writes=ratchet_fps_writes(a.fps,(a.out/'eboot.elf').read_bytes(),a.vblank_hz)
         blob=struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,len(writes))
         for offset,data in writes: blob+=struct.pack('<QQ',offset,len(data))+data
         (a.out/'patches.bin').write_bytes(blob)

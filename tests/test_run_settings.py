@@ -107,3 +107,57 @@ class RestartResolutionTests(unittest.TestCase):
         rows = self.run_restarts(explicit=True)
         self.assertEqual([row['BB_RENDER_RES'] for row in rows], ['800x450'] * 3)
         self.assertTrue(all(row['BB_AUTO_RENDER_RES'] is None for row in rows))
+
+
+class RatchetPacingTests(unittest.TestCase):
+    """The frame rate preset's pacing at the vblank rate run.sh picks (or is given)."""
+
+    def launch(self, **extra):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            out = data / 'out'
+            out.mkdir()
+            (out / 'analysis.json').write_text(json.dumps({'sfo': {'TITLE_ID': 'CUSA01073'}}))
+            (out / 'eboot.elf').write_bytes(bytes(120))  # not 1.00: no writes, pacing still set
+            (data / 'eboot.bin').touch()
+            config = data / 'bbport.ini'
+            config.write_text('')
+            python = data / 'python'
+            python.write_text(f'#!{sys.executable}\n' +
+                'import subprocess, sys\n'
+                'if sys.argv[1] in ("scripts/patches.py", "scripts/mods.py", "-c"):\n'
+                '    sys.exit(subprocess.call([sys.executable, *sys.argv[1:]]))\n')
+            python.chmod(0o755)
+            probe = data / 'probe'
+            probe.write_text(f'#!{sys.executable}\n' +
+                'import json, os\n'
+                'from pathlib import Path\n'
+                'Path(os.environ["BB_CONFIG"]).with_name("environment").write_text(json.dumps('
+                '{key: os.environ.get(key) for key in ("BB_VBLANK_HZ", "BB_FPS_LIMIT")}))\n')
+            probe.chmod(0o755)
+            env = dict(os.environ, BB_PREBUILT='1', BB_PROBE=str(probe), PYTHON=str(python),
+                       BB_DATA_DIR=str(data), BB_CONFIG=str(config), BB_GAME_DIR=str(data))
+            for key in ('BB_FPS', 'BB_VBLANK_HZ', 'BB_FPS_LIMIT', 'BB_RENDER_RES', 'BB_LIVE_RES'):
+                env.pop(key, None)
+            env.update(extra)
+            subprocess.run([shutil.which('bash'), 'run.sh'], cwd=ROOT, env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=30)
+            return json.loads((data / 'environment').read_text())
+
+    def test_default_vblank_per_preset(self):
+        self.assertEqual(self.launch(BB_FPS='60'), {'BB_VBLANK_HZ': '60', 'BB_FPS_LIMIT': None})
+        self.assertEqual(self.launch(BB_FPS='120'), {'BB_VBLANK_HZ': '240', 'BB_FPS_LIMIT': '120'})
+        self.assertEqual(self.launch(BB_FPS='uncap'), {'BB_VBLANK_HZ': '240', 'BB_FPS_LIMIT': None})
+
+    def test_forced_vblank_keeps_the_preset_rate(self):
+        # The owner speed test forced 240 Hz: "60" ran at ~68 FPS.
+        self.assertEqual(self.launch(BB_FPS='60', BB_VBLANK_HZ='240'),
+                         {'BB_VBLANK_HZ': '240', 'BB_FPS_LIMIT': '60'})
+        self.assertEqual(self.launch(BB_FPS='120', BB_VBLANK_HZ='480'),
+                         {'BB_VBLANK_HZ': '480', 'BB_FPS_LIMIT': '120'})
+        self.assertEqual(self.launch(BB_FPS='120', BB_VBLANK_HZ='120'),
+                         {'BB_VBLANK_HZ': '120', 'BB_FPS_LIMIT': None})
+
+    def test_explicit_frame_limit_wins(self):
+        self.assertEqual(self.launch(BB_FPS='60', BB_VBLANK_HZ='240', BB_FPS_LIMIT='50'),
+                         {'BB_VBLANK_HZ': '240', 'BB_FPS_LIMIT': '50'})

@@ -122,7 +122,25 @@ elif [[ -n ${scaled_output:-} ]]; then
     export BB_DMEM_MB=${BB_DMEM_MB:-9152}
     echo "Output ${scaled_output}: scene ${scaled_render}, direct memory ${BB_DMEM_MB} MiB (live_resolution=1: live changes)"
 fi
-"$PYTHON" scripts/patches.py --out "$out" --fps "$fps" --extra "${BB_PATCHES:-}" --settings "$BB_CONFIG" --game-dir "$game" --render-res "${BB_RENDER_RES:-}" --output-res "${BB_OUTPUT_RES:-}" \
+if [[ -z ${BB_VBLANK_HZ:-} ]]; then
+    # Ratchet stalls with 480 Hz vblank; 240 Hz keeps immediate flips and works with its pacing.
+    # Keep Bloodborne's existing default. BB_VBLANK_HZ remains an explicit override.
+    rac_hz=480
+    if [[ -f $out/analysis.json ]] && [[ $("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sfo"].get("TITLE_ID", ""))' "$out/analysis.json") == CUSA01073 ]]; then
+        rac_hz=240
+    fi
+    case $fps in uncap|120) export BB_VBLANK_HZ=$rac_hz ;; 90) export BB_VBLANK_HZ=90 ;; *) export BB_VBLANK_HZ=60 ;; esac
+fi
+# Ratchet & Clank paces itself for flips on vblank ticks of the preset's rate (60 at 60 Hz); at
+# any other rate (240 Hz: flips at once) the preset is paced by the port's limiter instead.
+if [[ -z ${BB_FPS_LIMIT:-} ]]; then
+    limit=$("$PYTHON" scripts/patches.py --out "$out" --fps "$fps" --vblank-hz "$BB_VBLANK_HZ" --print-frame-limit) || limit=0
+    if [[ -n $limit && $limit != 0 ]]; then
+        export BB_FPS_LIMIT=$limit
+        echo "Frame rate $fps at vblank $BB_VBLANK_HZ Hz: paced by the frame limit (BB_FPS_LIMIT=$limit)"
+    fi
+fi
+"$PYTHON" scripts/patches.py --out "$out" --fps "$fps" --vblank-hz "$BB_VBLANK_HZ" --extra "${BB_PATCHES:-}" --settings "$BB_CONFIG" --game-dir "$game" --render-res "${BB_RENDER_RES:-}" --output-res "${BB_OUTPUT_RES:-}" \
     --patches-dir "${BB_PATCHES_DIR:-$data/patches}" --patches-config "${BB_PATCHES_CONFIG:-$data/patches.json}"
 # Background upload of the game's GPU memory into VRAM ahead of use (BufferCache::Preupload):
 # 1 = only memory already in VRAM that the game rewrote (no new VRAM), 2 = all of it (~3 GB more
@@ -201,15 +219,6 @@ export BB_COPY_GPU_BUFFERS=${BB_COPY_GPU_BUFFERS:-1}
 # A guest write next to small GPU outputs the GPU is still writing (counters, compute results,
 # up to BB_GPU_WRITE_TWINS_MAX bytes per page) does not wait for the GPU (BufferCache twins).
 export BB_GPU_WRITE_TWINS=${BB_GPU_WRITE_TWINS:-1} BB_GPU_WRITE_TWINS_MAX=${BB_GPU_WRITE_TWINS_MAX:-65536}
-if [[ -z ${BB_VBLANK_HZ:-} ]]; then
-    # Ratchet stalls with 480 Hz vblank; 240 Hz keeps immediate flips and works with its pacing.
-    # Keep Bloodborne's existing default. BB_VBLANK_HZ remains an explicit override.
-    rac_hz=480
-    if [[ -f $out/analysis.json ]] && [[ $("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sfo"].get("TITLE_ID", ""))' "$out/analysis.json") == CUSA01073 ]]; then
-        rac_hz=240
-    fi
-    case $fps in uncap|120) export BB_VBLANK_HZ=$rac_hz ;; 90) export BB_VBLANK_HZ=90 ;; *) export BB_VBLANK_HZ=60 ;; esac
-fi
 # FSR 4: faster post passes next to the downloaded ones (incremental; tools/fsr4_optimize.sh).
 if [[ -z ${BB_PREBUILT:-} && -d fsr4_shaders ]] && command -v spirv-cross >/dev/null; then
     bash tools/fsr4_optimize.sh || echo 'FSR 4: optimized post passes not built' >&2

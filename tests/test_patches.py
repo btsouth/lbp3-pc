@@ -227,6 +227,30 @@ class RatchetClockTests(unittest.TestCase):
                 elf[offset] ^= 1
                 self.assertEqual(patches.ratchet_fps_writes('120', elf), [])
 
+    def test_pacing_follows_the_vblank_rate(self):
+        # The game's period is 1/59.94 s whatever the vblank: its own pacing only where flips land
+        # on ticks of the preset's rate, else interval 0 and the port's frame limit.
+        self.assertEqual(patches.ratchet_pacing('60', 60), (1.0, 0))
+        self.assertEqual(patches.ratchet_pacing('90', 90), (59.94/90, 0))
+        self.assertEqual(patches.ratchet_pacing('120', 120), (59.94/120, 0))
+        self.assertEqual(patches.ratchet_pacing('30', 60), (None, 0))
+        for hz in (0, 240, 480):
+            for fps in ('30', '60', '90', '120'):
+                with self.subTest(fps=fps, hz=hz):
+                    self.assertEqual(patches.ratchet_pacing(fps, hz), (0.0, int(fps)))
+            self.assertEqual(patches.ratchet_pacing('uncap', hz), (0.0, 0))
+        self.assertEqual(patches.ratchet_pacing('120', 60), (0.0, 120))
+
+    def test_interval_written_for_the_vblank_rate(self):
+        def interval(fps, hz):
+            code = dict(patches.ratchet_fps_writes(fps, self.executable(), hz))[
+                patches.RATCHET_INTERVAL_SITE]
+            return struct.unpack_from('<f', code, 4)[0]
+        self.assertEqual(interval('60', 60), 1.0)
+        self.assertEqual(interval('60', 240), 0.0)
+        self.assertEqual(interval('30', 240), 0.0)
+        self.assertEqual(patches.ratchet_fps_writes('30', self.executable(), 60), [])
+
     def test_truncated_clock_segment_rejects_both_writes(self):
         elf = self.executable()
         struct.pack_into('<Q', elf, 0x40+56+32, len(patches.RATCHET_CLOCK_CODE)-1)
