@@ -198,11 +198,12 @@ set_source_files_properties(../tests/test_scene_resolution.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 target_link_libraries(scene-resolution-test PRIVATE bbgpu)
 add_executable(deferred-pipeline-test EXCLUDE_FROM_ALL ../tests/test_deferred_pipeline.cpp ../tests/test_gpu_runtime_stubs.cpp)
-target_include_directories(deferred-pipeline-test PRIVATE shim shadps4 third_party/gcn/include)
+target_include_directories(deferred-pipeline-test PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include)
 target_compile_options(deferred-pipeline-test PRIVATE -UNDEBUG -fPIC)
 set_source_files_properties(../tests/test_deferred_pipeline.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 target_link_libraries(deferred-pipeline-test PRIVATE bbgpu)
+add_dependencies(deferred-pipeline-test host_shaders)
 add_executable(taa-shader-test EXCLUDE_FROM_ALL ../tests/test_taa_shader.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(taa-shader-test PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include)
 target_compile_options(taa-shader-test PRIVATE -UNDEBUG -fPIC)

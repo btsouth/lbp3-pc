@@ -393,6 +393,11 @@ public:
         }
         cv.notify_one();
     }
+    /// Returns once every job submitted so far has finished.
+    void WaitIdle() {
+        std::unique_lock lk{mutex};
+        idle_cv.wait(lk, [&] { return jobs.empty() && running == 0; });
+    }
 
 private:
     void Run() {
@@ -406,12 +411,20 @@ private:
                 }
                 job = std::move(jobs.front());
                 jobs.pop_front();
+                ++running;
             }
             job();
+            {
+                std::scoped_lock lk{mutex};
+                --running;
+            }
+            idle_cv.notify_all();
         }
     }
     std::mutex mutex;
     std::condition_variable cv;
+    std::condition_variable idle_cv;
+    u32 running = 0;
     std::deque<std::function<void()>> jobs;
     std::vector<std::thread> workers;
     bool stop = false;
@@ -1280,6 +1293,15 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
 
 std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule module,
                                                              std::span<const u32> spv_code) {
+    // bbport: pipelines built on workers (deferred or async) hold the module until their
+    // vkCreateGraphicsPipelines returns; it must outlive them.
+    if (compiler) {
+        compiler->WaitIdle();
+    }
+    for (auto it = pending_graphics.begin(); it != pending_graphics.end();) {
+        it = std::ranges::contains(it->second->modules, module) ? pending_graphics.erase(it)
+                                                                : std::next(it);
+    }
     std::optional<vk::ShaderModule> new_module{};
     for (const auto& [_, program] : program_cache) {
         for (auto& m : program->modules) {
