@@ -20,8 +20,8 @@ static uint64_t capabilities;
 static _Atomic size_t guards_acquired, guards_released;
 static uint64_t stack_canary;
 static _Atomic size_t memory_calls;
-/* Dynamic TLS of linked modules: module IDs 2..7 (1 is the eboot's static TLS). */
-#define TLS_MODULES 8
+/* Dynamic TLS of linked modules: module IDs 2..15 (1 is the eboot's static TLS). */
+#define TLS_MODULES 16
 static struct { const void *data; uint64_t filesz, memsz; } tls_modules[TLS_MODULES];
 static _Thread_local unsigned char *tls_blocks[TLS_MODULES];
 static void *process_param;

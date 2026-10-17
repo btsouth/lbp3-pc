@@ -457,7 +457,7 @@ int main(int argc, char **argv) {
             LinkedModule *x=&modules[m];
             if (x->base>=size || !x->size || x->size>size-x->base || x->init<x->base || x->init-x->base>=x->size ||
                 (x->tls_module && (x->tls_address>=size || x->tls_memsz>size-x->tls_address || x->tls_memsz>1024*1024 ||
-                                   x->tls_filesz>x->tls_memsz || x->tls_module<2 || x->tls_module>7)))
+                                   x->tls_filesz>x->tls_memsz || x->tls_module<2 || x->tls_module>15)))
                 fail("invalid linked module metadata");
         }
         if (nb>import_count) fail("invalid binding count");
