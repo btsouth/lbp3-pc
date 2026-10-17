@@ -404,6 +404,12 @@ static ABI int32_t ime_result(uint32_t *result) {
 }
 static ABI int32_t ime_term(void) { memset(&ime,0,sizeof(ime)); return 0; }
 
+/* ---- Content search (the console's media library): no content, never updated ---- */
+static ABI int32_t content_search_init(const void *param) { (void)param; return 0; }
+static ABI int32_t content_search_term(void) { return 0; }
+static ABI int32_t content_search_last_update(int64_t *id) { if (id) *id=0; return 0; }
+static ABI int32_t content_search_app_index(uint32_t *index) { if (index) *index=0; return 0; }
+
 /* ---- Trophies: accepted locally, recorded in the log ---- */
 static uint32_t trophy_flags[4];
 static ABI int32_t trophy_context(int32_t *ctx,int32_t user,uint32_t label,uint64_t options) {
@@ -648,6 +654,9 @@ static const RuntimeExport exports[]={
     {"sceNpTrophyCreateContext",trophy_context}, {"sceNpTrophyCreateHandle",trophy_handle},
     {"sceNpTrophyRegisterContext",trophy_register}, {"sceNpTrophyUnlockTrophy",trophy_unlock},
     {"sceNpTrophyGetTrophyUnlockState",trophy_unlock_state},
+    {"sceContentSearchInit",content_search_init}, {"sceContentSearchTerm",content_search_term},
+    {"sceContentSearchGetContentLastUpdateId",content_search_last_update},
+    {"sceContentSearchGetMyApplicationIndex",content_search_app_index},
     {"sceNpTrophyGetGameInfo",trophy_game_info}, {"sceNpTrophyGetTrophyInfo",trophy_info},
     {"scePlayGoInitialize",playgo_init}, {"scePlayGoOpen",playgo_open}, {"scePlayGoGetChunkId",playgo_chunk_ids},
     {"scePlayGoGetLocus",playgo_locus}, {"scePlayGoSetInstallSpeed",playgo_speed},

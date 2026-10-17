@@ -28,5 +28,12 @@ int main(void) {
     int platinum=99; assert(!unlock(1,1,42,&platinum)); assert(!unlock(1,1,42,&platinum));
     assert(!state(1,1,flags,&count)); assert(count==1 && flags[1]==(1u<<10) && platinum==-1);
     assert(state(1,1,NULL,&count)<0);
-    puts("optional services: scheduler round-trip and trophy bit/count contracts passed");
+    int32_t (ABI *cs_init)(const void*)=(int32_t (ABI *)(const void*))runtime_services_resolve("dPj4ZtRcIWk#s#t");
+    int32_t (ABI *cs_update)(int64_t*)=(int32_t (ABI *)(int64_t*))runtime_services_resolve("PD5bnBTsv6Y#s#t");
+    int32_t (ABI *cs_index)(uint32_t*)=(int32_t (ABI *)(uint32_t*))runtime_services_resolve("FRT4EYtZU1Y#s#t");
+    assert(cs_init && cs_update && cs_index);
+    uint64_t cs_param=0x80000; int64_t update=-1; uint32_t index=UINT32_MAX;
+    assert(!cs_init(&cs_param) && !cs_update(&update) && !cs_index(&index));
+    assert(update==0 && index==0);
+    puts("optional services: scheduler round-trip, trophy bit/count and content search contracts passed");
 }
