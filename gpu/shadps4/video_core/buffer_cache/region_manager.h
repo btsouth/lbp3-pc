@@ -184,24 +184,24 @@ public:
     /// bbport: every page of the region modified.
     template <Type type>
     [[nodiscard]] bool IsRegionFullyModified(u64 offset, u64 size) noexcept {
-        if constexpr (type == Type::CPU) {
-            RefreshHotPages();
-        }
         const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
         const size_t end_page =
             Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
         if (start_page >= NUM_PAGES_PER_REGION || end_page <= start_page) {
             return true;
         }
-        return GetRegionBits<type>().AllInRange(start_page, std::min<size_t>(end_page, NUM_PAGES_PER_REGION));
+        const size_t last = std::min<size_t>(end_page, NUM_PAGES_PER_REGION);
+        if constexpr (type == Type::CPU) {
+            if (HotRefreshPending()) {
+                return (cpu | hot).AllInRange(start_page, last);
+            }
+        }
+        return GetRegionBits<type>().AllInRange(start_page, last);
     }
 
     template <Type type>
     [[nodiscard]] bool IsRegionModified(u64 offset, u64 size) noexcept {
         RENDERER_TRACE;
-        if constexpr (type == Type::CPU) {
-            RefreshHotPages();
-        }
         const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
         const size_t end_page =
             Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
@@ -210,7 +210,15 @@ public:
         }
 
         const RegionBits& bits = GetRegionBits<type>();
-        return bits.AnyInRange(start_page, end_page);
+        if (bits.AnyInRange(start_page, end_page)) {
+            return true;
+        }
+        // bbport: callers may hold no lock here (read-only bindings), so the hot pages are only
+        // looked at; ForEachModifiedRange marks them modified under the lock.
+        if constexpr (type == Type::CPU) {
+            return HotRefreshPending() && hot.AnyInRange(start_page, end_page);
+        }
+        return false;
     }
 
     /// bbport (pre-upload): whether some page is CPU-modified but not GPU-modified.
@@ -315,6 +323,7 @@ private:
 
     /// A new guest submission since the hot pages were last marked: they may have been written
     /// (they are writable), so they count as modified until uploaded again.
+    /// Called with the lock held: a fault handler sets bits of `cpu` under it too.
     void RefreshHotPages() {
         if (num_hot == 0) {
             return;
@@ -325,6 +334,10 @@ private:
         }
         hot_epoch = epoch;
         cpu |= hot;
+    }
+
+    [[nodiscard]] bool HotRefreshPending() const noexcept {
+        return num_hot != 0 && BbStats::upload_epoch.load(std::memory_order_relaxed) != hot_epoch;
     }
 
     void KeepHotPagesModified(size_t start_page, size_t end_page) {
