@@ -211,7 +211,19 @@ static ABI __attribute__((noreturn)) void guest_libc_exit(int status) {
     runtime_report();
     exit(status);
 }
+static uintptr_t resolve_scoped(const char *name, int is_data);
+/* libkernel (p#J) and libScePosix (I#J) export the same POSIX functions under the same NIDs:
+ * an import from one finds the other's implementation. */
 uintptr_t runtime_resolve(const char *name, int is_data) {
+    uintptr_t found=resolve_scoped(name,is_data);
+    size_t n=strcspn(name,"#");
+    if (found || n>100 || (strcmp(name+n,"#p#J") && strcmp(name+n,"#I#J"))) return found;
+    char alias[128];
+    memcpy(alias,name,n);
+    strcpy(alias+n,strcmp(name+n,"#p#J") ? "#p#J" : "#I#J");
+    return resolve_scoped(alias,is_data);
+}
+static uintptr_t resolve_scoped(const char *name, int is_data) {
     if (!(capabilities & 1)) return 0;
     if (is_data) {
         static int32_t need_libc_internal = 1; /* SDK marker variable referenced by Fios2 */
@@ -273,11 +285,17 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
 }
 static const struct { const char *nid, *symbol; } import_names[]={
 #include "import_names.inc"
+#include "import_names_runtime.inc"
 };
+/* A NID names one symbol whatever library imports it: compare up to the '#'. */
+static int same_nid(const char *a,const char *b) {
+    size_t n=strcspn(a,"#");
+    return n==strcspn(b,"#") && !memcmp(a,b,n);
+}
 /* Symbol name for a scoped NID, or NULL when this eboot/libc never imports it. */
 const char *runtime_symbol(const char *nid) {
     for (size_t i=0;i<sizeof(import_names)/sizeof(*import_names);++i)
-        if (!strcmp(nid,import_names[i].nid)) return import_names[i].symbol;
+        if (same_nid(nid,import_names[i].nid)) return import_names[i].symbol;
     return NULL;
 }
 /* Same symbol name means same contract whether imported from libkernel or
