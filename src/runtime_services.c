@@ -229,6 +229,8 @@ static ABI int32_t np_get_np_id(int32_t user,char *id) { /* SceNpId: online ID, 
     if (!np_signed_in()) return NP_SIGNED_OUT;
     (void)user; memset(id,0,36); np_online_id(id); return 0;
 }
+/* PSN itself answers (signed in: available); only the game's own servers are gone. */
+static ABI int32_t np_availability(void) { return np_signed_in() ? 0 : NP_SIGNED_OUT; }
 static ABI int32_t np_account_country(int32_t user,char *country) { /* SceNpCountryCode: 2 + NUL */
     if (!country) return NP_INVALID_ARGUMENT;
     if (!np_signed_in()) return NP_SIGNED_OUT;
@@ -536,7 +538,7 @@ static const RuntimeExport exports[]={
     {"sceNpUnregisterPlusEventCallback",ok_void}, {"sceNpCheckCallback",np_check_callback},
     {"sceNpSetNpTitleId",ok_void}, {"sceNpNotifyPlusFeature",ok_void}, {"sceNpSetContentRestriction",ok_void},
     {"sceNpCreateAsyncRequest",np_request}, {"sceNpDeleteRequest",ok_void}, {"sceNpAbortRequest",ok_void},
-    {"sceNpPollAsync",np_poll}, {"sceNpCheckNpAvailability",np_signed_out},
+    {"sceNpPollAsync",np_poll}, {"sceNpCheckNpAvailability",np_availability},
     {"sceNpGetParentalControlInfo",np_signed_out}, {"sceNpCheckPlus",np_signed_out},
     {"sceNpGetGamePresenceStatus",np_signed_out},
     {"sceNpCmpNpId",np_compare}, {"sceNpCmpOnlineId",np_compare_online},
