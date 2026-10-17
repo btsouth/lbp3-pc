@@ -196,6 +196,7 @@ static ABI int32_t psem_getvalue(sem_t **sem,int32_t *value) {
     return 0;
 }
 
+static ABI int yield_thread(void) { sched_yield(); return 0; }
 static const RuntimeExport exports[]={
     {"sceKernelCreateEventFlag",evf_create}, {"sceKernelDeleteEventFlag",evf_delete},
     {"sceKernelWaitEventFlag",evf_wait}, {"sceKernelPollEventFlag",evf_poll},
@@ -203,7 +204,7 @@ static const RuntimeExport exports[]={
     {"sceKernelCancelEventFlag",evf_cancel},
     {"sem_init",psem_init}, {"sem_destroy",psem_destroy}, {"sem_wait",psem_wait},
     {"sem_trywait",psem_trywait}, {"sem_timedwait",psem_timedwait}, {"sem_post",psem_post},
-    {"sem_getvalue",psem_getvalue},
+    {"sem_getvalue",psem_getvalue}, {"pthread_yield",yield_thread}, {"sched_yield",yield_thread},
 };
 uintptr_t runtime_evf_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
 void runtime_evf_report(void) {}

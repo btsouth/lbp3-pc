@@ -22,6 +22,7 @@
 {"Z4QosVuAsA0#runtime","pthread_once"},
 {"Xs9hdiD7sAA#runtime","pthread_setschedparam"},
 {"WrOLvHU0yQM#runtime","pthread_setspecific"},
+{"B5GmVDKwpn0#runtime","pthread_yield"},
 {"C2kJ-byS5rM#runtime","pwrite"},
 {"AqBioC2vF3I#runtime","read"},
 {"Ez8xjo9UF4E#runtime","recv"},
