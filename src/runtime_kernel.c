@@ -166,9 +166,11 @@ static ABI __attribute__((noreturn)) void hard_exit(int status) {
     fflush(stdout);
     _exit(status);
 }
-static ABI __attribute__((noreturn)) void raise_exception(uint32_t code,uint64_t argument) {
-    fprintf(stderr,"STOP: guest raised debug exception code=0x%x argument=0x%llx, caller %p\n",code,(unsigned long long)argument,
-            __builtin_return_address(0));
+/* With a frame pointer of its own, the saved rbp is the guest caller's: its chain is printed. */
+static ABI __attribute__((noreturn, optimize("no-omit-frame-pointer"))) void raise_exception(uint32_t code,uint64_t argument) {
+    uintptr_t *frame=__builtin_frame_address(0);
+    fprintf(stderr,"STOP: guest raised debug exception code=0x%x argument=0x%llx\n",code,(unsigned long long)argument);
+    runtime_guest_frames((uintptr_t)frame,(uintptr_t)frame);
     runtime_report();
     exit(23);
 }
