@@ -161,6 +161,12 @@ static ABI int32_t attr_set_stack(ThreadAttr **slot,uint64_t size) {
     if (!a || size<16384) return ERR(22);
     a->stack=size; return 0;
 }
+/* scePthreadAttrSetstack: the game's own stack area. Its size is kept; the thread runs on a
+ * stack of that size from the runtime (glibc would put its thread descriptor into the area). */
+static ABI int32_t attr_set_stack_area(ThreadAttr **slot,void *address,uint64_t size) {
+    if (!address) return ERR(22);
+    return attr_set_stack(slot,size);
+}
 static ABI int32_t attr_get_stack(ThreadAttr **slot,uint64_t *size) {
     ThreadAttr *a=find_attr(slot);
     if (!a || !size) return ERR(22);
@@ -349,7 +355,7 @@ uintptr_t runtime_thread_resolve(const char *name) {
         {"9BcDykPmo1I#p#J",guest_error},
         {"nsYoNRywwNg#p#J",attr_init}, {"62KCwEMmzcM#p#J",attr_destroy},
         {"x1X76arYMxU#p#J",attr_get}, {"8+s5BzZjxSg#p#J",attr_affinity},
-        {"UTXzJbWhhTE#p#J",attr_set_stack}, {"-Wreprtu0Qs#p#J",attr_set_detach},
+        {"UTXzJbWhhTE#p#J",attr_set_stack}, {"Bvn74vj6oLo#p#J",attr_set_stack_area}, {"-Wreprtu0Qs#p#J",attr_set_detach},
         {"4+h9EzwKF4I#p#J",attr_set_policy}, {"DzES9hQF4f4#p#J",attr_set_param},
         {"3qxgM4ezETA#p#J",attr_set_affinity}, {"eXbUSpEaTsA#p#J",attr_set_inherit},
         {"JaRMy+QcpeU#p#J",attr_get_detach}, {"-fA+7ZlGDQs#p#J",attr_get_stack},
