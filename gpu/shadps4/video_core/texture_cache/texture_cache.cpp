@@ -101,6 +101,7 @@ void TextureCache::ProcessDownloadImages() {
 
 void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
     Image& image = slot_images[image_id];
+    WatchImage(image, "download");
     if (False(image.flags & ImageFlagBits::GpuModified)) {
         return;
     }
@@ -769,7 +770,11 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
 ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, ViewMemo* memo,
                                      bool refresh) {
     Image& image = slot_images[image_id];
-    WatchImage(image, refresh ? "texture (refresh)" : "texture (no refresh)");
+    if (desc.type == BindingType::Storage) {
+        WatchImage(image, image.info.props.is_tiled ? "storage (tiled)" : "storage (linear)");
+    } else {
+        WatchImage(image, refresh ? "texture (refresh)" : "texture (no refresh)");
+    }
     if (desc.type == BindingType::Storage) {
         image.flags |= ImageFlagBits::GpuModified;
         image.gpu_write_tick = scheduler.CurrentTick();
