@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -217,8 +218,16 @@ static void set_host_name(const char *name) {
     memcpy(host,name,strnlen(name,sizeof(host)-1));
     pthread_setname_np(pthread_self(),host);
 }
+/* The fault report runs on its own stack: a guest thread's small stack (or an overflow of it)
+ * would otherwise fault again inside the handler and end the process without a report. */
+void runtime_thread_alt_stack(void) {
+    enum { ALT_STACK=256*1024 };
+    stack_t alt={.ss_sp=malloc(ALT_STACK),.ss_size=ALT_STACK};
+    if (alt.ss_sp) sigaltstack(&alt,NULL);
+}
 static void *host_start(void *p) {
     GuestThread *t=p;
+    runtime_thread_alt_stack();
     attach(t);
     set_host_name(t->name);
     if (!setjmp(t->exit_jump)) t->result=t->entry(t->argument);
@@ -369,5 +378,6 @@ void runtime_thread_report(void) {
 uintptr_t runtime_thread_resolve(const char *name) { (void)name; return 0; }
 void runtime_thread_report(void) {}
 void runtime_thread_attach_main(void) {}
+void runtime_thread_alt_stack(void) {}
 void runtime_set_main_tls(const void *d,uint64_t f,uint64_t m,uint64_t a) { (void)d;(void)f;(void)m;(void)a; }
 #endif

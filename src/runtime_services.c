@@ -88,6 +88,11 @@ static ABI int32_t system_status(unsigned char *status) {
     return 0;
 }
 static ABI int32_t system_event(void *event) { (void)event; return SYSTEM_NO_EVENT; }
+/* SceSystemServiceDisplaySafeAreaInfo: the whole screen (ratio 1.0). */
+static ABI int32_t safe_area(float *info) {
+    if (!info) return (int32_t)0x80A10003;
+    memset(info,0,132); *info=1.0f; return 0;
+}
 static ABI int32_t hide_splash(void) { note("SystemService: splash screen hidden"); return 0; }
 static ABI int32_t launch_browser(void) { note("SystemService: web browser request ignored (offline)"); return 0; }
 
@@ -329,6 +334,30 @@ static ABI int32_t playgo_locus(int32_t handle,const uint16_t *ids,uint32_t coun
     }
     return 0;
 }
+/* Nothing left to install: an empty to-do list, every chunk complete, full speed. */
+static ABI int32_t playgo_todo(int32_t handle,void *list,uint32_t count,uint32_t *out) {
+    (void)list; (void)count;
+    if (handle!=playgo_handle || !handle) return PLAYGO_BAD_HANDLE;
+    if (!out) return PLAYGO_BAD_POINTER;
+    *out=0; return 0;
+}
+static ABI int32_t playgo_progress(int32_t handle,const uint16_t *ids,uint32_t count,uint64_t *progress) {
+    if (handle!=playgo_handle || !handle) return PLAYGO_BAD_HANDLE;
+    if (!ids || !progress) return PLAYGO_BAD_POINTER;
+    if (!count) return PLAYGO_BAD_SIZE;
+    progress[0]=progress[1]=(uint64_t)count*1024*1024; /* progressSize, totalSize */
+    return 0;
+}
+static ABI int32_t playgo_get_speed(int32_t handle,int32_t *speed) {
+    if (handle!=playgo_handle || !handle) return PLAYGO_BAD_HANDLE;
+    if (!speed) return PLAYGO_BAD_POINTER;
+    *speed=2; /* SCE_PLAYGO_INSTALL_SPEED_TRICKLE..FULL: full */
+    return 0;
+}
+static ABI int32_t playgo_close(int32_t handle) {
+    if (handle!=playgo_handle || !handle) return PLAYGO_BAD_HANDLE;
+    playgo_handle=0; return 0;
+}
 static ABI int32_t playgo_speed(int32_t handle,int32_t speed) { (void)speed; return handle==playgo_handle && handle ? 0 : PLAYGO_BAD_HANDLE; }
 
 /* ---- DiscMap: the game is fully installed, no disc bitmap exists ---- */
@@ -462,6 +491,9 @@ static const RuntimeExport exports[]={
     {"sceNpTrophyGetGameInfo",trophy_game_info}, {"sceNpTrophyGetTrophyInfo",trophy_info},
     {"scePlayGoInitialize",playgo_init}, {"scePlayGoOpen",playgo_open}, {"scePlayGoGetChunkId",playgo_chunk_ids},
     {"scePlayGoGetLocus",playgo_locus}, {"scePlayGoSetInstallSpeed",playgo_speed},
+    {"scePlayGoGetToDoList",playgo_todo}, {"scePlayGoGetProgress",playgo_progress},
+    {"scePlayGoGetInstallSpeed",playgo_get_speed}, {"scePlayGoClose",playgo_close},
+    {"sceSystemServiceGetDisplaySafeAreaInfo",safe_area},
     {"sceMouseInit",ok_void}, {"sceMouseOpen",mouse_open}, {"sceMouseRead",mouse_read}, {"sceMouseClose",mouse_close},
     {"sceAudioInOpen",audio_in_open},
     {"sceDiscMapIsRequestOnHDD",discmap_on_hdd}, {"sceDiscMap_8A828CAEE7EDD5E9",discmap_8a82},

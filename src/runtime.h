@@ -14,6 +14,7 @@ void runtime_restart(void);
 typedef void (ABI *GuestCallback)(void);
 void runtime_start(uint64_t capabilities);
 uintptr_t runtime_resolve(const char *name, int is_data);
+void runtime_thread_alt_stack(void);
 void runtime_report(void);
 void runtime_finalize(void *dso);
 uintptr_t runtime_mutex_resolve(const char *name);
@@ -45,6 +46,9 @@ void runtime_set_main_tls(const void *data, uint64_t filesz, uint64_t memsz, uin
 void runtime_thread_attach_main(void);
 int32_t *runtime_errno(void);
 uintptr_t runtime_sema_resolve(const char *name);
+uintptr_t runtime_evf_resolve(const char *name);
+uintptr_t runtime_fiber_resolve(const char *name);
+uintptr_t runtime_misc_resolve(const char *name);
 void runtime_sema_report(void);
 unsigned runtime_sema_waiters(uint32_t id);
 uintptr_t runtime_time_resolve(const char *name);

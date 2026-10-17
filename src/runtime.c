@@ -259,6 +259,12 @@ static uintptr_t resolve_scoped(const char *name, int is_data) {
     if (content) return content;
     uintptr_t timer = runtime_time_resolve(name);
     if (timer) return timer;
+    uintptr_t misc = runtime_misc_resolve(name);
+    if (misc) return misc;
+    uintptr_t fiber = runtime_fiber_resolve(name);
+    if (fiber) return fiber;
+    uintptr_t evf = runtime_evf_resolve(name);
+    if (evf) return evf;
     uintptr_t sema = runtime_sema_resolve(name);
     if (sema) return sema;
     uintptr_t rwlock = runtime_rwlock_resolve(name);
