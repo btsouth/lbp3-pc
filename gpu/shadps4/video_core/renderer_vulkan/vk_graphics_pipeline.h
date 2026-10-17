@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <boost/container/static_vector.hpp>
 #include <xxhash.h>
 
@@ -84,6 +85,13 @@ public:
         bool Deserialize(Serialization::Archive& ar);
     };
 
+    /// bbport: with a deferral, the driver compile runs through `submit` (a worker) and
+    /// `built` gets the completed serialization data there.
+    struct Deferral {
+        std::function<void(std::function<void()>)> submit;
+        std::function<void(const SerializationSupport&)> built;
+    };
+
     GraphicsPipeline(const Instance& instance, Scheduler& scheduler, DescriptorHeap& desc_heap,
                      const Shader::Profile& profile, const GraphicsPipelineKey& key,
                      vk::PipelineCache pipeline_cache,
@@ -91,7 +99,7 @@ public:
                      std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
                      std::optional<const Shader::Gcn::FetchShaderData> fetch_shader,
                      std::span<const vk::ShaderModule> modules, SerializationSupport& sdata,
-                     bool preloading);
+                     bool preloading, const Deferral* deferral = nullptr);
     ~GraphicsPipeline();
 
     const std::optional<const Shader::Gcn::FetchShaderData>& GetFetchShader() const noexcept {
@@ -114,6 +122,18 @@ public:
 
 private:
     void BuildDescSetLayout(bool preloading);
+    void Build(vk::PipelineCache pipeline_cache,
+               std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
+               std::span<const vk::ShaderModule> modules, SerializationSupport& sdata,
+               bool preloading);
+
+    struct DeferredBuild {
+        std::array<Shader::RuntimeInfo, MaxShaderStages> runtime_infos{};
+        std::array<vk::ShaderModule, MaxShaderStages> modules{};
+        size_t num_modules{};
+        SerializationSupport sdata{};
+        std::function<void(const SerializationSupport&)> built;
+    };
 
 private:
     GraphicsPipelineKey key;

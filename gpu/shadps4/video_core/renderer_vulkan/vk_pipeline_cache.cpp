@@ -431,6 +431,7 @@ PipelineCache::~PipelineCache() = default;
 // bbport: shader/pipeline compile time on the GPU thread, reported by BB_FRAME_STATS.
 std::atomic<u64> g_bb_compile_ns;
 std::atomic<u32> g_bb_compiles;
+extern std::atomic<u64> g_bb_pipeline_wait_ns; // vk_pipeline_common.cpp: recorder waits
 namespace {
 // bbport BB_SHADER_PROFILE=1: time each translation and pipeline; slow ones always reported.
 bool ShaderProfile() {
@@ -586,15 +587,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         return FinishPipeline(sel.graphics_key, *job);
     }
     if (skippable) {
-        if (!compiler) {
-            const char* env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
-            const u32 threads = env && *env ? u32(std::strtoul(env, nullptr, 10))
-                                            : std::clamp(std::thread::hardware_concurrency() / 4, 1u, 4u);
-            compiler = std::make_unique<PipelineCompiler>(std::max(threads, 1u));
-            std::printf("GPU: new pipelines of passes drawn every frame compile on %u threads "
-                        "(BB_ASYNC_PIPELINES=0: on the GPU thread, the game waits)\n",
-                        std::max(threads, 1u));
-        }
+        EnsureCompiler();
         auto job = std::make_shared<PendingPipeline>();
         job->modules = sel.modules;
         pending_graphics.emplace(sel.graphics_key, job);
@@ -623,11 +616,33 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         CompileTimer timer{"graphics", pipeline_hash};
 
         GraphicsPipeline::SerializationSupport sdata{};
-        it.value() = std::make_unique<GraphicsPipeline>(
-            instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
-            sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
-
-        RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+        if (DeferredPipelines()) {
+            // bbport: the draw needs this pipeline, but not on the GPU thread: the driver
+            // compiles it on a worker while the GPU thread goes on with the next draws (and their
+            // pipelines, in parallel); the recording thread waits for it in order. A loading
+            // frame with dozens of new pipelines then costs the longest chain, not their sum
+            // (LBP3 stopped itself at its 1 s flip watchdog after ~0.5 s of serial compiles).
+            EnsureCompiler();
+            const GraphicsPipeline::Deferral deferral{
+                .submit = [this](std::function<void()> job) { compiler->Submit(std::move(job)); },
+                .built =
+                    [key = sel.graphics_key, pipeline_hash](
+                        const GraphicsPipeline::SerializationSupport& built) {
+                        auto data = built;
+                        RegisterPipelineData(key, pipeline_hash, data);
+                    },
+            };
+            it.value() = std::make_unique<GraphicsPipeline>(
+                instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache,
+                sel.infos, sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false,
+                &deferral);
+            ++deferred_started;
+        } else {
+            it.value() = std::make_unique<GraphicsPipeline>(
+                instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache,
+                sel.infos, sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
+            RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+        }
         ++num_new_pipelines;
 
         if (EmulatorSettings.IsShaderCollect()) {
@@ -660,6 +675,29 @@ const GraphicsPipeline* PipelineCache::FinishPipeline(const GraphicsPipelineKey&
     return slot.get();
 }
 
+void PipelineCache::EnsureCompiler() {
+    if (compiler) {
+        return;
+    }
+    const char* env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
+    const u32 threads = env && *env ? u32(std::strtoul(env, nullptr, 10))
+                                    : std::clamp(std::thread::hardware_concurrency() / 4, 1u, 4u);
+    compiler = std::make_unique<PipelineCompiler>(std::max(threads, 1u));
+    std::printf("GPU: new graphics pipelines compile on %u threads (BB_ASYNC_PIPELINES=0: on the "
+                "GPU thread, the game waits)\n",
+                std::max(threads, 1u));
+}
+
+bool PipelineCache::DeferredPipelines() {
+    // BB_ASYNC_PIPELINES=0 also turns this off (every pipeline built on the GPU thread).
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_ASYNC_PIPELINES");
+        const char* deferred = std::getenv("BB_DEFERRED_PIPELINES");
+        return !(env && env[0] == '0') && !(deferred && deferred[0] == '0');
+    }();
+    return enabled;
+}
+
 bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indirect) {
     // Only a pass drawn every frame may go without a draw for a frame or two (its render target
     // drawn to in each of the last frames, below). A one-time render compiles at once, as during
@@ -683,13 +721,15 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
         frame_seen = frame;
         static u32 printed = 0;
         const u32 second = BbStats::coarse_second.load(std::memory_order_relaxed);
-        if (async_started != 0 && second - printed >= 5) {
+        if ((async_started != 0 || deferred_started != 0) && second - printed >= 5) {
             printed = second;
             std::printf("GPU: %llu pipelines compiled in the background, %llu draws went without "
-                        "theirs meanwhile, %llu waited for one\n",
+                        "theirs meanwhile, %llu waited for one; %llu more built on workers for "
+                        "the recorder, which waited %.1f ms for them\n",
                         (unsigned long long)async_started, (unsigned long long)async_skipped,
-                        (unsigned long long)async_waited);
-            async_started = async_skipped = async_waited = 0;
+                        (unsigned long long)async_waited, (unsigned long long)deferred_started,
+                        double(g_bb_pipeline_wait_ns.exchange(0)) / 1e6);
+            async_started = async_skipped = async_waited = deferred_started = 0;
         }
     }
     if (last_frame_draws < 300) {

@@ -34,7 +34,8 @@ GraphicsPipeline::GraphicsPipeline(
     vk::PipelineCache pipeline_cache, std::span<const Shader::Info*, MaxShaderStages> infos,
     std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader_,
-    std::span<const vk::ShaderModule> modules, SerializationSupport& sdata, bool preloading)
+    std::span<const vk::ShaderModule> modules, SerializationSupport& sdata, bool preloading,
+    const Deferral* deferral)
     : Pipeline{instance, scheduler, desc_heap, profile, pipeline_cache}, key{key_},
       fetch_shader{std::move(fetch_shader_)} {
     const vk::Device device = instance.GetDevice();
@@ -69,6 +70,40 @@ GraphicsPipeline::GraphicsPipeline(
                             guest_buffers, vs_info.step_rate_0, vs_info.step_rate_1);
         }
     }
+
+    if (!deferral) {
+        Build(pipeline_cache, runtime_infos, modules, sdata, preloading);
+        return;
+    }
+    // bbport: the driver's compile (vkCreateGraphicsPipelines, tens of ms on some drivers) runs
+    // on a worker. Everything the GPU thread needs to record the draw (layouts, stages, vertex
+    // inputs read from guest memory) is ready now; the handle is waited for when bound.
+    ASSERT(modules.size() <= MaxShaderStages);
+    auto job = std::make_shared<DeferredBuild>();
+    std::ranges::copy(runtime_infos, job->runtime_infos.begin());
+    std::ranges::copy(modules, job->modules.begin());
+    job->num_modules = modules.size();
+    job->sdata = sdata;
+    job->built = deferral->built;
+    handle_pending.store(true, std::memory_order_release);
+    deferral->submit([this, pipeline_cache, job] {
+        Build(pipeline_cache, job->runtime_infos,
+              std::span<const vk::ShaderModule>{job->modules.data(), job->num_modules}, job->sdata,
+              false);
+        if (job->built) {
+            job->built(job->sdata);
+        }
+        PublishHandle();
+    });
+}
+
+void GraphicsPipeline::Build(vk::PipelineCache pipeline_cache,
+                             std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
+                             std::span<const vk::ShaderModule> modules, SerializationSupport& sdata,
+                             bool preloading) {
+    const vk::Device device = instance.GetDevice();
+    const auto debug_str = GetDebugString();
+    const auto& infos = stages;
 
     const vk::PipelineVertexInputDivisorStateCreateInfo divisor_state = {
         .vertexBindingDivisorCount = static_cast<u32>(sdata.divisors.size()),
@@ -269,7 +304,7 @@ GraphicsPipeline::GraphicsPipeline(
     }
 
     std::array<vk::SampleCountFlagBits, AmdGpu::NUM_COLOR_BUFFERS> color_samples;
-    std::ranges::transform(key.color_samples, color_samples.begin(), [&instance](u8 num_samples) {
+    std::ranges::transform(key.color_samples, color_samples.begin(), [this](u8 num_samples) {
         return num_samples ? LiverpoolToVK::NumSamples(num_samples, instance.GetColorSampleCounts())
                            : vk::SampleCountFlagBits::e1;
     });
@@ -435,7 +470,11 @@ GraphicsPipeline::GraphicsPipeline(
     SetObjectName(device, *pipeline, "Graphics Pipeline {}", debug_str);
 }
 
-GraphicsPipeline::~GraphicsPipeline() = default;
+GraphicsPipeline::~GraphicsPipeline() {
+    if (IsHandlePending()) {
+        WaitHandle(); // the worker still writes this object
+    }
+}
 
 template <typename Attribute, typename Binding>
 void GraphicsPipeline::GetVertexInputs(
