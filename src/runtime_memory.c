@@ -323,7 +323,25 @@ static int overlaps(uintptr_t start, uintptr_t end, int ignore_reserved) {
     return 0;
 }
 /* First-fit search in the PS4 user range, starting from the hint. */
+/* Where a mapping without an address goes. The PS4 kernel puts those apart from the addresses
+ * games pick themselves: Ratchet & Clank maps its heaps at 0x1000000000 and up by address and
+ * keeps using those addresses, so libc's hintless malloc heap must not take 0x1000000000.
+ * BB_HINTLESS_BASE=ADDR moves them (default USER_MIN, as before). */
+static uintptr_t hintless_base(void) {
+    static uintptr_t base;
+    if (!base) {
+        const char *v=getenv("BB_HINTLESS_BASE");
+        uintptr_t b=v ? (uintptr_t)strtoull(v,NULL,0) : USER_MIN;
+        base=b>=USER_MIN && b<USER_MAX ? b : USER_MIN;
+    }
+    return base;
+}
+static uintptr_t find_free_from(uintptr_t hint, uint64_t size, uint64_t alignment);
 static uintptr_t find_free(uintptr_t hint, uint64_t size, uint64_t alignment) {
+    uintptr_t at=find_free_from(hint ? hint : hintless_base(), size, alignment);
+    return at || !hint ? (at ? at : find_free_from(USER_MIN,size,alignment)) : 0;
+}
+static uintptr_t find_free_from(uintptr_t hint, uint64_t size, uint64_t alignment) {
     uintptr_t at=align_up(hint<USER_MIN ? USER_MIN : hint, alignment);
     for (size_t i=vma_index(at); at+size<=USER_MAX; ++i) {
         if (i==vma_count || vmas[i].start>=at+size) return at;
