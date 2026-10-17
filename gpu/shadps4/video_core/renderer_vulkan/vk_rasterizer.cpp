@@ -3402,8 +3402,32 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             bound_images.emplace_back(image_id);
 
             auto& image = texture_cache.GetImage(image_id);
+            // bbport BB_SWAP_RB=addr,addr... (diagnostics): those textures are sampled with red
+            // and blue swapped, to find which image a wrong-coloured surface comes from.
+            static const std::vector<VAddr> swap_rb = [] {
+                std::vector<VAddr> out;
+                for (const char* p = std::getenv("BB_SWAP_RB"); p && *p;) {
+                    char* end = nullptr;
+                    out.push_back(std::strtoull(p, &end, 0));
+                    p = end && *end == ',' ? end + 1 : nullptr;
+                }
+                return out;
+            }();
+            const VideoCore::TextureCache::ImageDesc* view_desc = &desc;
+            if (!swap_rb.empty() && !is_storage &&
+                std::ranges::find(swap_rb, image.info.guest_address) != swap_rb.end() &&
+                image_desc_storage.size() < image_desc_storage.capacity()) {
+                auto& swapped = image_desc_storage.emplace_back(desc);
+                auto& m = swapped.view_info.mapping;
+                const auto r = m.r == vk::ComponentSwizzle::eIdentity ? vk::ComponentSwizzle::eR : m.r;
+                const auto b = m.b == vk::ComponentSwizzle::eIdentity ? vk::ComponentSwizzle::eB : m.b;
+                m.r = b;
+                m.b = r;
+                view_desc = &swapped;
+                memo_entry = nullptr;
+            }
             auto& image_view = texture_cache.FindTexture(
-                image_id, desc, memo_entry ? &memo_entry->view_memo : nullptr, !on_helper);
+                image_id, *view_desc, memo_entry ? &memo_entry->view_memo : nullptr, !on_helper);
             const auto binding = image.binding;
 
             // bbport: a proxied scene image sampled with normalized coordinates reads the proxy:
