@@ -1,7 +1,7 @@
-# Ratchet & Clank (PS4) on Linux
+# LittleBigPlanet 3 (PS4) on Linux
 
-A native Linux port of *Ratchet & Clank* (2016) for PlayStation 4. It runs the game's original
-PS4 executable directly on a Linux PC, the way Wine plus DXVK runs a Windows game:
+A native Linux port of *LittleBigPlanet 3* for PlayStation 4. It runs the game's original PS4
+executable directly on a Linux PC, the way Wine plus DXVK runs a Windows game:
 
 - the game's x86-64 code runs on your CPU as it is, with no emulation;
 - a small runtime stands in for the PS4 system libraries the game calls;
@@ -9,179 +9,93 @@ PS4 executable directly on a Linux PC, the way Wine plus DXVK runs a Windows gam
   [shadPS4](https://github.com/shadps4-emu/shadPS4).
 
 It is built on [bbport](https://github.com/deadinside28/bloodborne_pc), the native Bloodborne port
-by deadinside28, and keeps its loader, runtime and renderer. Only this one game is supported.
+by deadinside28, and keeps its loader, runtime and renderer.
 
 **No game files are included, and none are linked here.** You need your own copy of the game,
-dumped from your own PS4. This project is not affiliated with Sony Interactive Entertainment or
-Insomniac Games.
+dumped from your own PS4. This project is not affiliated with Sony Interactive Entertainment, Media
+Molecule or Sumo Digital.
 
-**Status: experimental.** The game boots, plays its cutscenes, saves and loads, and plays with
-sound and a controller. Veldin has been played and other planets load, but no one has finished the
-game on it yet. It has been tested on one desktop (Intel Core i7-14700F, NVIDIA RTX 4070 SUPER) and,
-for correctness only, on an Intel iGPU.
+**Status: early work in progress, not playable yet.** The game boots, shows the brightness
+calibration screen, reports that its online servers are unreachable, and goes on offline to the
+Pod, the Pod Computer and the Prologue map. The Introduction level plays to its end, lit and
+colored, at the game's 30 FPS. Nothing after the Introduction has been reached yet. It has been
+tested on one desktop (NVIDIA RTX 4070 SUPER) and, for correctness only, on an Intel iGPU.
 
 ## Requirements
 
-- Linux on an x86-64 PC and a GPU with Vulkan 1.3. NVIDIA RTX is the tested setup. AMD and Intel
-  GPUs should work but have had little or no testing.
-- A dump of **Ratchet & Clank, European release CUSA01073, version 01.00**, with no update merged
-  into it. The game folder holds `eboot.bin`, `sce_module/` and `sce_sys/`.
-  - The US release (CUSA01047) has not been tried. The launcher lets you start it with a warning.
-  - Updates (1.01 and later) are not supported: the port's patches use the 1.00 addresses.
-- About 30 GB of disk space for the game, plus a few GB for the shader cache.
+- Linux on an x86-64 PC and a GPU with Vulkan 1.3. NVIDIA is the tested setup. AMD has not been
+  tried.
+- A dump of **LittleBigPlanet 3, European release CUSA00063, version 01.00**, with no update merged
+  into it. The game folder holds `eboot.bin`, `sce_module/` and `sce_sys/`. Other releases have not
+  been tried.
 
 ## Getting the game files
 
-You need a jailbroken PS4 and your own copy of the game, on disc or bought digitally.
-
-1. Dump the game with a PS4 dumper of your choice, or back up its package file.
-2. If you have a `.pkg`, extract it with a PKG extractor (the shadPS4 docs list a few). Use a
-   recent tool: some old extractors leave parts of compressed files stale.
-3. You should end up with a folder named `CUSA01073` that contains `eboot.bin`. Point the launcher
-   at that folder.
+You need a jailbroken PS4 and your own copy of the game, on disc or bought digitally. Dump it with
+a PS4 dumper of your choice, or extract its package file with a recent PKG extractor. You should
+end up with a folder named `CUSA00063` that contains `eboot.bin`.
 
 Do not ask for game files in this project's issues. They will be closed.
 
-## Install and run
+## Build and run
 
-### AppImage (recommended)
-
-1. Download `Ratchet-Clank-port-x86_64.AppImage` from the releases page. No release has been
-   published yet; until then, build from source (below).
-2. Make it executable and start it:
-
-   ```bash
-   chmod +x Ratchet-Clank-port-x86_64.AppImage
-   ./Ratchet-Clank-port-x86_64.AppImage
-   ```
-
-3. In the launcher, choose your game folder. A green tick means it found CUSA01073 1.00.
-4. Press **Play**. The first start prepares the game image and compiles shaders, so expect a slow
-   first minute and some stutter the first time you visit each area. Both are cached afterwards.
-
-`./Ratchet-Clank-port-x86_64.AppImage --play` starts the game with the saved settings and no
-launcher window (handy for Steam as a non-Steam game).
-
-Saves, caches and settings live in `~/.local/share/ratchet-port`. Launcher settings live in
-`~/.config/ratchet-port-launcher`.
-
-The AppImage needs unprivileged user namespaces, which most desktop distributions have on.
-
-### From source
-
-You need GCC, CMake, Ninja, Python 3, glslang, SDL3, the Vulkan headers and the libraries listed
-in `shell.nix`. With [Nix](https://nixos.org) they all come from `shell.nix`.
+There is no AppImage or launcher for this game yet. You need GCC, CMake, Ninja, Python 3,
+glslang, SDL3, the Vulkan headers and the libraries listed in `shell.nix`. With
+[Nix](https://nixos.org) they all come from `shell.nix`.
 
 ```bash
-git clone --recursive <this repository> ratchet-port && cd ratchet-port
+git clone --recursive <this repository> lbp3-port && cd lbp3-port
 bash build.sh
-bash launcher/ratchet-launcher.sh      # needs PyGObject, GTK 4 and libadwaita
+BB_GAME_DIR=/path/to/CUSA00063 bash run.sh
 ```
 
-Or without the launcher:
+`run.sh` recognises the game by its title ID and applies what it needs. `BB_USER_NAME=Name` sets
+the name the game shows for your profile.
 
-```bash
-BB_GAME_DIR=/path/to/CUSA01073 bash run.sh
-```
+## Known issues
 
-`run.sh` recognises the game by its title ID and applies everything it needs. You don't have to
-set any variables.
+- The first start after installing (or after an update of the port clears the shader cache) can
+  stop at the first level load with a GPU timeout from the game itself: a few hundred shaders
+  compile at once and the game's watchdog gives up. Start it again; the second start uses the
+  cache and gets through.
+- Only the Introduction has been played. Later levels, Create mode and saving progress after the
+  Introduction have not been tested.
+- Online play does not work. The game's servers are closed; the port tells the game they are
+  unreachable and it goes on offline.
+- Many system functions the game imports are not implemented yet and return 0 (`BB_STUB_IMPORTS`).
+  Most are online, dialog and content search functions.
+- Sound has not been checked in detail.
+- The in-game overlay (Insert) and the bundled launcher use bbport's Bloodborne layout. Most of
+  their options do nothing in this game.
 
-## Settings
+## Environment variables
 
-The launcher covers the common ones:
-
-| Setting | Choices |
-|---|---|
-| Frame rate | **60 FPS** (default), 120 FPS, Unlocked, 30 FPS (as on PS4) |
-| Anti-aliasing | **Auto**: DLSS on NVIDIA RTX, FSR 3.1 on other GPUs. Or DLSS, FSR 3.1, or the game's own TAA |
-| Show FPS counter | Off by default |
-| Fullscreen and monitor | Windowed on the primary monitor by default |
-| Controller | The first one connected, or a specific one |
-| Language | The console language the game sees. Only English is tested |
-
-DLSS and FSR 3.1 replace the game's own temporal anti-aliasing at the game's native 1920x1080, then
-the image is scaled to your window. If DLSS can't start (no NVIDIA RTX GPU or no DLSS library), FSR
-3.1 is used.
-
-The game's 120 FPS and Unlocked modes are patched in by the port. The game's own clock is patched
-too, so it does not run faster at higher frame rates. On the tested RTX 4070 SUPER the 120 FPS mode
-runs at about 80 FPS in busy scenes, because the CPU side is the limit.
-
-Settings are stored in `bbport.ini` in the data folder. The in-game overlay (Insert key) can change
-some of them while you play.
-
-### Controls
-
-Any controller SDL supports works: DualShock 4, DualSense, Xbox and others. The keyboard works
-too. Its default layout is bbport's and can be changed with `key.<button>=` lines in `bbport.ini`
-(for example `key.cross=Space`).
-
-### Environment variables
-
-You don't need these for normal play. They are for testing and bug reports.
+You don't need to set these. The port sets them for this game, and each one can be overridden.
 
 | Variable | Default for this game | What it does |
 |---|---|---|
 | `BB_GAME_DIR` | | The game folder |
-| `BB_FPS` | `60` | `30`, `60`, `120` or `uncap` |
-| `BB_UPSCALER` | `dlss` on NVIDIA, else `fsr3` | `dlss`, `fsr3` or `off` (the game's TAA) |
-| `BB_GAME_AA` | `1` | `0` turns off the DLSS/FSR stand-in for the game's TAA |
-| `BB_READBACK_LINEAR_ASYNC` | `1` | `0` waits for every GPU readback (slower, for comparisons) |
-| `BB_VBLANK_HZ` | `60`, or `240` for 120 and Unlocked | The port's vblank rate |
-| `BB_FPS_LIMIT` | set by the preset | Frame limit in FPS, `0` for none |
+| `BB_FPS` | `30` | The game's frame rate, as on PS4 |
+| `BB_IMAGE_BASE` | `0x80000000` | Loads the executable below 4 GiB, where the game's job code expects it |
+| `BB_STUB_IMPORTS` | `1` | Missing system functions return 0 instead of stopping the game |
+| `BB_NP_SIGNED_IN` | `1` | Signed in to PSN with the game's servers unreachable |
+| `BB_LOCAL_UDP` | `1` | Local network sockets for the game's networking code |
 | `BB_SAVE_LOG` | | `1` writes the log to `logs/` in the data folder |
 | `BB_SKIP_GAME_CHECK` | | `1` starts a game folder the check rejects |
-
-The port also sets `BB_HINTLESS_BASE`, `BB_STUB_IMPORTS`, `BB_CREATE_YIELD_US`,
-`BB_CREATE_YIELD_ALL`, `BB_READBACK_LINEAR` and `BB_PC_MODEL=0` for this game. The game does not
-start without them. Each one can still be overridden. `run.sh` explains each.
-
-## Known issues
-
-- Only CUSA01073 version 01.00 is tested. The US release and updated versions are not.
-- No one has played the game from start to finish on the port yet.
-- The first visit to each area stutters while shaders compile. Later visits use the cache.
-- 120 FPS and Unlocked are newer than 60 FPS and less tested. If one misbehaves, use 60.
-- Don't set `BB_VBLANK_HZ=480`. With very high frame rates at 480 Hz the game has frozen. The
-  port uses 240 Hz instead.
-- Occlusion data arrives a frame later than on the PS4 (`BB_READBACK_LINEAR_ASYNC=1`, much faster).
-  If you see objects pop in when turning the camera, try `BB_READBACK_LINEAR_ASYNC=0` and report it.
-- On CPUs without AMD's SSE4a instructions (all Intel CPUs) a few game instructions are emulated.
-  This is automatic and costs almost nothing.
-- The in-game overlay (Insert) still uses bbport's Bloodborne layout. Many of its options, such as
-  output resolution and FSR 4, do nothing in this game.
-- AMD GPUs run with the same memory model as NVIDIA (`BB_PC_MODEL=0`). bbport's newer model is not
-  tested with this game.
-
-## Reporting a problem
-
-Turn on **Save the log to a file** in the launcher, reproduce the problem, and attach the log from
-`~/.local/share/ratchet-port/logs` with your GPU, driver version and distribution.
-
-## Tools
-
-`scripts/ratchet_save.py` shows a save file and can write a copy with every planet unlocked and the
-checkpoint moved. Run it with `--help`. Keep a backup of your saves first.
 
 ## Credits and licenses
 
 This port is licensed under the **GNU GPL v2 or later** ([LICENSE](LICENSE)).
 
 - [bbport](https://github.com/deadinside28/bloodborne_pc) by deadinside28 and its contributors:
-  the loader, runtime, renderer, launcher and packaging this port is built on. bbport's own
-  documentation is in [docs/bloodborne](docs/bloodborne/README.md).
+  the loader, runtime, renderer and packaging this port is built on. bbport's own documentation is
+  in [docs/bloodborne](docs/bloodborne/README.md).
 - [shadPS4](https://github.com/shadps4-emu/shadPS4): the video core and shader recompiler the
   renderer is derived from (GPL-2.0-or-later), with sirit and half.
 - AMD FidelityFX Super Resolution 3.1 through [FSR-Vulkan](https://github.com/FireBurn/FSR-Vulkan)
   by FireBurn (MIT) and the AMD FidelityFX SDK (MIT).
-- NVIDIA DLSS. The DLSS bridge (`gpu/dlss_bridge`, MIT) comes from
-  [Supermedo's port](https://github.com/Supermedo/bloodborne_pc) and
-  [IFreemz/shadPS4-Bloodborne-DLSS-FSR](https://github.com/IFreemz/shadPS4-Bloodborne-DLSS-FSR).
-  The AppImage includes NVIDIA's DLSS runtime library under the NVIDIA RTX SDK license, which is
-  included next to it as `NVIDIA-DLSS-LICENSE.txt`. The DLSS SDK is not part of this repository.
 - [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9) (MIT) and
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT).
 
-Ratchet & Clank is a trademark of Sony Interactive Entertainment. NVIDIA, RTX and DLSS are
-trademarks of NVIDIA Corporation. AMD and FidelityFX are trademarks of Advanced Micro Devices.
+LittleBigPlanet is a trademark of Sony Interactive Entertainment. AMD and FidelityFX are trademarks
+of Advanced Micro Devices.
