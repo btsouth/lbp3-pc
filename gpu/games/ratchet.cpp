@@ -24,12 +24,17 @@ constexpr SceneAa RatchetTaa = {
     .far = 1000.0f,
     .jitter_dword = 38,
 };
+/// The geometry ring in the 188 MB GPU-visible block at 0x1100000000: job threads (+0x1792fff,
+/// +0x179186a, +0x17915b7, +0x1791dc0) fill it every frame, ~85% of the write faults; the GPU
+/// only reads it.
+constexpr CodeRange StreamedMemory[] = {{0x1101000000, 0x1104000000}};
 } // namespace
 
 extern const Profile RatchetProfile = {
     .name = "Ratchet & Clank",
     .serials = Serials,
     .scene_aa = &RatchetTaa,
+    .streamed_memory = StreamedMemory,
     // The motion blur before the TAA: tile and neighbour maximum velocity (cs 233341ad,
     // bfbd37b0), a half-size gather (cs 2655cbd4, 1fbf981c, 0354eebe), then this full-screen
     // pass blends the result over the scene color by its coverage. Without it the scene is left

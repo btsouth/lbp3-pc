@@ -9,6 +9,7 @@
 #include <cstdlib>
 
 #include "bbport_toggles.h"
+#include "game_profile.h"
 #include "common/div_ceil.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
@@ -320,6 +321,7 @@ private:
 
     void CountWriteFaults(size_t start_page, size_t end_page) {
         const bool hot_enabled = HotPagesEnabled();
+        static const bool streamed_only = Game::HasStreamedMemory();
         for (size_t page = start_page; page < end_page; ++page) {
             if (writeable.Get(page)) {
                 continue; // not protected: no fault
@@ -328,7 +330,12 @@ private:
             if (!hot_enabled) {
                 continue;
             }
-            if (write_faults[page] < HotFaults) {
+            // With streamed memory named by the game's profile, only pages there, at once.
+            if (streamed_only) {
+                if (!Game::InStreamedMemory(cpu_addr + page * TRACKER_BYTES_PER_PAGE)) {
+                    continue;
+                }
+            } else if (write_faults[page] < HotFaults) {
                 ++write_faults[page];
                 continue;
             }
