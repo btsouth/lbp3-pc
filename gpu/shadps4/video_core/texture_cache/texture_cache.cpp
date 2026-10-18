@@ -637,7 +637,21 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     auto& src_image = slot_images[image_id];
     auto& new_image = slot_images[new_image_id];
 
-    RefreshImage(new_image);
+    // bbport: an image that only gained layers (LBP3 renders 64-slice volumes one slice per pass
+    // into an array that grows by a layer each time) uploads only the new layers; the copy
+    // brings the others. Uploading all of them each time cost 750 MB in one frame (633 ms
+    // between flips on devbox, past the game's 1 s flip watchdog when the machine was busy).
+    const auto& old_info = src_image.info;
+    const bool layers_only =
+        old_info.type == info.type && old_info.pixel_format == info.pixel_format &&
+        old_info.tile_mode == info.tile_mode && old_info.size == info.size &&
+        old_info.pitch == info.pitch && old_info.num_samples == info.num_samples &&
+        old_info.resources.levels == 1 && info.resources.levels == 1 &&
+        info.resources.layers > old_info.resources.layers && !info.props.is_volume &&
+        !old_info.props.is_volume && !info.props.is_block &&
+        old_info.mips_layout[0].pitch == info.mips_layout[0].pitch &&
+        old_info.mips_layout[0].height == info.mips_layout[0].height;
+    RefreshImage(new_image, layers_only ? old_info.resources.layers : 0);
     runtime.CopyImage(&src_image, &new_image);
 
     if (src_image.binding.is_bound || src_image.binding.is_target) {
@@ -933,7 +947,7 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
     return image.FindView(desc.view_info, false);
 }
 
-void TextureCache::RefreshImage(Image& image) {
+void TextureCache::RefreshImage(Image& image, u32 first_layer) {
     WatchImage(image, "refresh entered");
     if (False(image.flags & ImageFlagBits::Dirty) || image.info.num_samples > 1) {
         return;
@@ -1011,7 +1025,17 @@ void TextureCache::RefreshImage(Image& image) {
             window_start = now;
         }
     }
-    BbStats::image_upload_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
+    // bbport: the bytes before first_layer's slice in the linear layout (one mip level).
+    const u64 first_byte = first_layer == 0
+                               ? 0
+                               : u64(image.info.mips_layout[0].pitch) *
+                                     image.info.mips_layout[0].height * (image.info.num_bits / 8) *
+                                     first_layer;
+    ASSERT(first_layer == 0 || (num_mips == 1 && !image.info.props.is_volume &&
+                                !image.info.props.is_block && first_layer < num_layers &&
+                                first_byte < image.info.guest_size));
+    BbStats::image_upload_bytes.fetch_add(image.info.guest_size - first_byte,
+                                          std::memory_order_relaxed);
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
     for (u32 m = 0; m < num_mips; m++) {
         const u32 width = std::max(image.info.size.width >> m, 1u);
@@ -1033,14 +1057,14 @@ void TextureCache::RefreshImage(Image& image) {
         const u32 extent_width = mip_pitch ? std::min(mip_pitch, width) : width;
         const u32 extent_height = mip_height ? std::min(mip_height, height) : height;
         image_copies.push_back({
-            .bufferOffset = mip_offset,
+            .bufferOffset = mip_offset + first_byte,
             .bufferRowLength = mip_pitch,
             .bufferImageHeight = mip_height,
             .imageSubresource{
                 .aspectMask = image.aspect_mask & ~vk::ImageAspectFlagBits::eStencil,
                 .mipLevel = m,
-                .baseArrayLayer = 0,
-                .layerCount = num_layers,
+                .baseArrayLayer = first_layer,
+                .layerCount = num_layers - first_layer,
             },
             .imageOffset = {0, 0, 0},
             .imageExtent = {extent_width, extent_height, depth},
@@ -1057,7 +1081,8 @@ void TextureCache::RefreshImage(Image& image) {
 
     const auto [in_buffer, in_offset] =
         buffer_cache.ObtainBufferForImage(image.info.guest_address, image.info.guest_size);
-    const auto [buffer, offset] = tile_manager.DetileImage(in_buffer, in_offset, image.info);
+    const auto [buffer, offset] =
+        tile_manager.DetileImage(in_buffer, in_offset, image.info, first_byte);
     for (auto& copy : image_copies) {
         copy.bufferOffset += offset;
     }
