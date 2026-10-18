@@ -12,6 +12,7 @@
 #include "bbport_sections.h"
 #include "game_profile.h"
 #include "bbport_ce_stats.h"
+#include "bbport_settings.h"
 #include "bbport_toggles.h"
 #include "bbport_write_log.h"
 #include "bbport_free_check.h"
@@ -71,6 +72,26 @@ static bool SkipDrawFor(u64 vs_hash, u64 ps_hash) {
     }
     return std::ranges::find(hashes, vs_hash) != hashes.end() ||
            (ps_hash && std::ranges::find(hashes, ps_hash) != hashes.end());
+}
+
+// bbport: the game's motion blur pass (games/: Ratchet) is left out when the Motion blur effect
+// is off in the menu (bbport.ini effect_motion_blur=0), or with experiment bit 1 of
+// BB_TOGGLE_FILE (A/B in one run).
+static bool SkipMotionBlur(u64 ps_hash) {
+    static const u64 shader = Game::MotionBlurShader();
+    if (!shader || ps_hash != shader) {
+        return false;
+    }
+    static const int effect = [] {
+        for (int e = 0; e < BbSettings::EffectCount; ++e) {
+            if (std::string_view{BbSettings::Effects[e].key} == "effect_motion_blur") {
+                return e;
+            }
+        }
+        return -1;
+    }();
+    return BbToggle::Experiment(1) ||
+           (effect >= 0 && !BbSettings::Get().effects[effect].load(std::memory_order_relaxed));
 }
 
 
@@ -1819,7 +1840,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         .program = {vs_info.ProgramBase(), ps_info ? ps_info->ProgramBase() : 0},
         .count = {num_indices, num_instances, 0},
     };
-    const bool skip_draw = SkipDrawFor(vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0);
+    const bool skip_draw = SkipDrawFor(vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0) ||
+                           SkipMotionBlur(ps_info ? ps_info->pgm_hash : 0);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, bound_pipeline->Handle());
         if (skip_draw) {
@@ -1961,7 +1983,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         .count = {max_count, stride, 0},
     };
     const bool skip_draw = SkipDrawFor(vs_crumb ? vs_crumb->pgm_hash : 0,
-                                       ps_crumb ? ps_crumb->pgm_hash : 0);
+                                       ps_crumb ? ps_crumb->pgm_hash : 0) ||
+                           SkipMotionBlur(ps_crumb ? ps_crumb->pgm_hash : 0);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, bound_pipeline->Handle());
         if (skip_draw) {

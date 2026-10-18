@@ -30,6 +30,11 @@ extern const Profile RatchetProfile = {
     .name = "Ratchet & Clank",
     .serials = Serials,
     .scene_aa = &RatchetTaa,
+    // The motion blur before the TAA: tile and neighbour maximum velocity (cs 233341ad,
+    // bfbd37b0), a half-size gather (cs 2655cbd4, 1fbf981c, 0354eebe), then this full-screen
+    // pass blends the result over the scene color by its coverage. Without it the scene is left
+    // as drawn; the TAA still reads the gather's mask (unchanged).
+    .motion_blur_ps = 0xe9bef76c,
 };
 
 } // namespace Game
