@@ -76,6 +76,10 @@ fi
 "$PYTHON" scripts/link_libc.py "$game" --out "$out"
 "$PYTHON" scripts/link_modules.py "$game" --out "$out"
 "$PYTHON" scripts/content_profile.py "$game" --out "$out" --sku "${BB_CONTENT_SKU:-full}"
+# Ratchet & Clank (2016; CUSA01073, the US CUSA01047 untested) gets its own defaults below.
+title=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sfo"].get("TITLE_ID", ""))' "$out/analysis.json" 2>/dev/null) || title=
+ratchet=0
+[[ $title == CUSA01073 || $title == CUSA01047 ]] && ratchet=1
 # Sizes chosen below for the previous launch are recomputed after an in-game restart.
 if [[ ${BB_AUTO_RENDER_RES:-} == 1 ]]; then
     unset BB_RENDER_RES BB_OUTPUT_RES BB_AUTO_RENDER_RES
@@ -83,8 +87,8 @@ fi
 # BB_RENDER_RES=WxH explicitly sets the game's render resolution (a patch at start).
 # Frame rate: BB_FPS=uncap (default; delta-time patch, vblank 480 Hz, frames shown at once),
 # 60/90 (fixed-timestep patches) or 30 (unpatched); Ratchet & Clank also 120 (its frame pacing
-# interval, scripts/patches.py). BB_PATCHES adds patch names ("a;b").
-fps=${BB_FPS:-uncap}
+# interval, scripts/patches.py; its default is 60). BB_PATCHES adds patch names ("a;b").
+if (( ratchet )); then fps=${BB_FPS:-60}; else fps=${BB_FPS:-uncap}; fi
 # bbport.ini output_res other than 1080p (720p for the Steam Deck, 1440p, 2160p): the whole game
 # renders at the preset's size of the output (a patch), the upscaler fills the output, the UI is
 # drawn at the output size. Preset and output changes need a restart.
@@ -97,7 +101,8 @@ fps=${BB_FPS:-uncap}
 if [[ -n ${BB_PROBE:-} ]]; then caps=$(dirname -- "$BB_PROBE")/bb-gpu-capabilities
 elif [[ -n ${BB_PREBUILT:-} ]]; then caps=bin/bb-gpu-capabilities
 else caps=out/bb-gpu-capabilities; fi
-if [[ -z ${BB_RENDER_RES:-} ]]; then
+# Ratchet & Clank always renders 1920x1080 (the output_res patches are Bloodborne's).
+if [[ -z ${BB_RENDER_RES:-} ]] && (( ! ratchet )); then
     read -r scaled_render scaled_output < <("$PYTHON" scripts/patches.py --print-scaled --settings "$BB_CONFIG") || true
 fi
 live=0
@@ -126,15 +131,13 @@ if [[ -z ${BB_VBLANK_HZ:-} ]]; then
     # Ratchet stalls with 480 Hz vblank; 240 Hz keeps immediate flips and works with its pacing.
     # Keep Bloodborne's existing default. BB_VBLANK_HZ remains an explicit override.
     rac_hz=480
-    if [[ -f $out/analysis.json ]] && [[ $("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sfo"].get("TITLE_ID", ""))' "$out/analysis.json") == CUSA01073 ]]; then
-        rac_hz=240
-    fi
+    (( ratchet )) && rac_hz=240
     case $fps in uncap|120) export BB_VBLANK_HZ=$rac_hz ;; 90) export BB_VBLANK_HZ=90 ;; *) export BB_VBLANK_HZ=60 ;; esac
 fi
 # Ratchet & Clank renders at 1920x1080 (its targets sit at fixed addresses; no resolution patch):
 # on a larger screen the presenter scales the finished frame with FSR 1 (edge-adaptive upscale
 # and sharpening) instead of a bilinear stretch. BB_FSR1=0: bilinear.
-if [[ -z ${BB_FSR1:-} && -f $out/analysis.json ]] && [[ $("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sfo"].get("TITLE_ID", ""))' "$out/analysis.json") == CUSA01073 ]]; then
+if [[ -z ${BB_FSR1:-} ]] && (( ratchet )); then
     export BB_FSR1=1
 fi
 # Ratchet & Clank paces itself for flips on vblank ticks of the preset's rate (60 at 60 Hz); at
@@ -165,6 +168,24 @@ export BB_PREUPLOAD=${BB_PREUPLOAD:-1}
 # BB_AS_0_3=1 (the launcher's developer switch "Synchronisation as in 0.3"): what changed since the
 # 0.3 release is reverted for comparisons: the 0.3 memory model, WRITE_DATA/DMA waiting for every
 # host copy, the scheduler's concurrent recording check.
+# Ratchet & Clank needs these (each one set by hand wins):
+# - BB_HINTLESS_BASE: libc's heap away from 0x1000000000, where the game puts its main heap;
+# - BB_STUB_IMPORTS: system functions the runtime lacks return 0 instead of stopping the game;
+# - BB_CREATE_YIELD_*: a new thread runs before its creator goes on, as on the PS4 (otherwise
+#   renderer start races the Render Thread and the game exits);
+# - BB_READBACK_LINEAR(_ASYNC): the occlusion buffer the CPU reads is a linear image, downloaded
+#   every frame without waiting for the GPU at each fence;
+# - BB_GAME_AA: DLSS or FSR 3.1 in place of the game's TAA (upscaler below);
+# - BB_PC_MODEL=0: the memory model it was tested with, on every GPU.
+# The CPU's missing SSE4a instructions are emulated automatically (src/runtime_sse4a.c).
+if (( ratchet )); then
+    export BB_HINTLESS_BASE=${BB_HINTLESS_BASE:-0x7000000000}
+    export BB_STUB_IMPORTS=${BB_STUB_IMPORTS:-1}
+    export BB_CREATE_YIELD_US=${BB_CREATE_YIELD_US:-2000} BB_CREATE_YIELD_ALL=${BB_CREATE_YIELD_ALL:-1}
+    export BB_READBACK_LINEAR=${BB_READBACK_LINEAR:-1} BB_READBACK_LINEAR_ASYNC=${BB_READBACK_LINEAR_ASYNC:-1}
+    export BB_GAME_AA=${BB_GAME_AA:-1}
+    export BB_PC_MODEL=${BB_PC_MODEL:-0}
+fi
 # The game's GPU (vendor ID and name), for the choices below that depend on it.
 gpu_vendor= gpu_name=
 if [[ -z ${BB_PC_MODEL:-} || ( ${BB_AUTO_NOHIZ:-1} != 0 && -z ${RADV_DEBUG:-} ) ]]; then
@@ -192,6 +213,23 @@ if [[ ${BB_AUTO_NOHIZ:-1} != 0 && -z ${RADV_DEBUG:-} && $gpu_name == *"(RADV "* 
             break
         fi
     done
+fi
+# Ratchet & Clank's upscaler when bbport.ini names none (the launcher's "Auto"): DLSS on NVIDIA
+# (FSR 3.1 when its libraries are missing), FSR 3.1 elsewhere.
+if (( ratchet )) && [[ -z ${BB_UPSCALER:-} ]]; then
+    chosen=
+    if [[ -f $BB_CONFIG ]]; then
+        while IFS= read -r line || [[ -n $line ]]; do
+            [[ $line =~ ^upscaler=(.+)$ ]] && chosen=${BASH_REMATCH[1]}
+        done < "$BB_CONFIG"
+    fi
+    if [[ -z $chosen ]]; then
+        if [[ -z $gpu_vendor ]]; then
+            IFS=$'\t' read -r gpu_vendor gpu_name < <("$caps" --device 2> /dev/null) || true
+        fi
+        if [[ $gpu_vendor == 0x10de ]]; then export BB_UPSCALER=dlss; else export BB_UPSCALER=fsr3; fi
+        echo "Upscaler: $BB_UPSCALER in place of the game's TAA (${gpu_name:-GPU unknown}; bbport.ini upscaler=: another)"
+    fi
 fi
 if [[ ${BB_AS_0_3:-0} == 1 ]]; then
     export BB_GUEST_IN_PLACE=0 BB_HOST_COPY_WAITS=all BB_PRODUCER_CHECK=1

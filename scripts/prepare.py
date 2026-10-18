@@ -161,7 +161,9 @@ def prepare(game, out):
         image[p['vaddr']:p['vaddr'] + p['filesz']] = span(elf, p['offset'], p['filesz'])
     # bbport: only the supported executable runs (game_check.py); others fail in the game's code.
     if found := game_check.problem(game, hashlib.sha256(image).hexdigest()):
-        raise GameCheckError(game_check.explain(*found))
+        if found[0] not in game_check.WARNINGS:
+            raise GameCheckError(game_check.explain(*found))
+        print(f'Warning: {game_check.explain(*found)}')
     dp = next(p for p in ph if p['type'] == 2)
     dyn = []
     for pos in range(dp['offset'], dp['offset'] + dp['filesz'], 16):
