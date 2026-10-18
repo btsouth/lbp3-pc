@@ -726,11 +726,15 @@ uint64_t runtime_experiment_bits;
  * point: a fault on that thread jumps back to it instead of terminating (probe.c). */
 __thread sigjmp_buf *runtime_fault_recover;
 static void *toggle_watcher(void *path) {
-    for (unsigned long long last=ULLONG_MAX;;) {
+    for (unsigned long long last=ULLONG_MAX, last_experiment=0;;) {
         FILE *f=fopen(path,"r");
         unsigned long long value=0, experiment=0;
         if (f) { if (fscanf(f,"%llu %llu",&value,&experiment)<1) value=0; fclose(f); }
         __atomic_store_n(&runtime_experiment_bits,(uint64_t)experiment,__ATOMIC_RELEASE);
+        if (experiment!=last_experiment) {
+            printf("Runtime: experiment bits=%llu\n",experiment);
+            last_experiment=experiment;
+        }
         if (value!=last) {
             __atomic_store_n(&runtime_disabled_optimizations,(uint64_t)value,__ATOMIC_RELEASE);
             printf("Runtime: disabled optimizations mask=%llu\n",value);
