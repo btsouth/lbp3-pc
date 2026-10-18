@@ -55,7 +55,7 @@ inline void Dump() {
     const s64 now = Now();
     const u64 end = head.load(std::memory_order_relaxed);
     const u64 count = std::min<u64>(end, 48);
-    std::printf("Flip trace (last %llu steps, ms before now):\n", (unsigned long long)count);
+    std::printf("Flip trace (last %llu steps, age in ms; larger is earlier):\n", (unsigned long long)count);
     for (u64 i = end - count; i < end; ++i) {
         const Entry e = ring[i % ring.size()];
         std::printf("  %9.1f  tid %d  %s %lld\n", double(now - e.ns) / 1e6, e.tid,

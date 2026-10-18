@@ -18,6 +18,7 @@
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/videoout/flip_trace.h"
+#include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 #include "core/libraries/videoout/video_out.h"
 #include "core/memory.h"
 #include "core/platform.h"
@@ -398,6 +399,7 @@ int PS4_SYSV_ABI sceGnmDebugHardwareStatus() {
     LOG_ERROR(Lib_GnmDriver, "(STUBBED) called");
     // bbport: games call it when their GPU watchdog gives up (LBP3 before its int 0x41).
     VideoOut::ReportFlipState();
+    Vulkan::Breadcrumbs::ReportStuck("guest GPU watchdog");
     AmdGpu::ReportQueueWait();
     return ORBIS_OK;
 }
