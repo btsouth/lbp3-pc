@@ -1689,10 +1689,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             ResolveIndexBuffer(index_offset);
         }
     }
-    EmitVertexBuffers();
-    if (is_indexed) {
-        EmitIndexBuffer();
-    }
 
     if (needs_barrier) {
         runtime.FlushBarriers();
@@ -1801,6 +1797,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
+    // bbport: vertex input and buffers go in right before the draw. Anything above may move
+    // recording to a new command buffer (CommandBuffer() starts a direct segment, a read trap
+    // Finish()es), which starts without them (VUID-vkCmdDraw-None-04914 on devbox).
+    EmitVertexBuffers();
+    if (is_indexed) {
+        EmitIndexBuffer();
+    }
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
@@ -1906,9 +1909,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     }
     const auto state = BeginRendering(pipeline);
 
-    BindVertexBuffers(pipeline);
+    ResolveVertexBuffers(pipeline, nullptr);
     if (is_indexed) {
-        BindIndexBuffer();
+        ResolveIndexBuffer(0);
     }
 
     const auto [buffer, base] =
@@ -1940,6 +1943,10 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
+    EmitVertexBuffers(); // right before the draw, as in DrawRecord
+    if (is_indexed) {
+        EmitIndexBuffer();
+    }
 
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
                                  : sizeof(VkDrawIndirectCommand)));
