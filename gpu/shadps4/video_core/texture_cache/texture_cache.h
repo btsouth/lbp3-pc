@@ -447,6 +447,12 @@ private:
     };
     std::array<FindImageCacheEntry, 1024> find_image_cache{};
     std::atomic<u64> registry_generation{0};
+    struct InvalidateMemo {
+        VAddr address = 0;
+        u64 size = 0;
+        u64 generation = ~0ULL;
+    };
+    std::array<InvalidateMemo, 256> invalidate_memo{}; ///< InvalidateMemoryFromGPU, under mutex
     std::mutex samplers_mutex;
     std::mutex download_images_mutex;
     std::atomic<bool> downloads_queued{false}; ///< download_images may be non-empty (checked without the lock)

@@ -41,6 +41,7 @@ class StagingBufferPool;
 namespace VideoCore {
 
 class TextureCache;
+struct Image;
 class MemoryTracker;
 class PageManager;
 
@@ -376,6 +377,14 @@ private:
 
     /// The image at device_addr, if any, tiled into `buffer` at `offset` (where the range is).
     bool SynchronizeMemoryFromImage(const Buffer* buffer, u64 offset, VAddr device_addr, u32 size);
+    /// bbport: the same for any buffer binding over a whole image the GPU rendered and memory
+    /// does not have yet (a shader reading or read-modify-writing a render target as a buffer).
+    void SynchronizeRenderedImage(const Buffer* buffer, u64 offset, VAddr device_addr, u32 size);
+
+    /// Writes an image's contents into an arena at arena_offset (tiled as the game stores it).
+    bool WriteImageToMemory(Image& image, const Buffer* arena, u64 arena_offset);
+    std::pair<const Buffer*, u64> ObtainBufferUnsynced(VAddr device_addr, u32 size,
+                                                       bool is_written, bool is_texel_buffer);
     /// bbport BB_LAYER_MEMORY (statistics): a binding not whole in one chunk.
     void NoteLayerMiss(VAddr address, u64 size, bool is_written);
     /// bbport BB_LAYER_MEMORY (buffer_cache_layer.cpp): a binding through the layer's memory
@@ -458,6 +467,7 @@ private:
         u64 generation = ~0ULL;
     };
     std::array<ImageMiss, 256> image_miss_cache{};
+    std::array<ImageMiss, 256> rendered_miss_cache{}; ///< SynchronizeRenderedImage
     Vulkan::Runtime& runtime;
     Vulkan::StagingBufferPool& staging_pool;
     AmdGpu::Liverpool* liverpool;

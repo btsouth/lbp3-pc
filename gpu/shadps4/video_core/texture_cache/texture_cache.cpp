@@ -261,10 +261,22 @@ void TextureCache::WatchImage(const Image& image, const char* what) {
 
 void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
     std::scoped_lock lock{mutex};
-    // bbport: only an image starting at `address` is affected, so the images over its first byte
-    // are all there is to look at (the whole range was walked for every GPU write binding).
-    ForEachImageInRegion(address, 1, [&](ImageId image_id, Image& image) {
+    // The image starting at `address` and every image wholly inside the write (LBP3 clears two
+    // 16 MB light atlases with one 64 MB binding) are reuploaded when accessed again. Writes over
+    // part of an image are not tracked (upstream TODO: subresources). bbport: ranges with no
+    // image inside past their first byte are remembered until images change, so most bindings
+    // only look at the images over their first byte.
+    const u64 generation = registry_generation.load(std::memory_order_relaxed);
+    auto& memo = invalidate_memo[((address >> 6) ^ max_size * 0x9E3779B1u) % invalidate_memo.size()];
+    const bool start_only =
+        memo.address == address && memo.size == max_size && memo.generation == generation;
+    bool inside = false;
+    const VAddr end = address + max_size;
+    ForEachImageInRegion(address, start_only ? 1 : max_size, [&](ImageId image_id, Image& image) {
         static const bool log = std::getenv("BB_IMAGE_SYNC_LOG") != nullptr;
+        const bool at_start = image.info.guest_address == address;
+        const bool whole = image.info.guest_address >= address &&
+                           image.info.guest_address + image.info.guest_size <= end;
         if (log) {
             static std::atomic<u32> printed{0};
             if (printed.fetch_add(1) < 200) {
@@ -272,18 +284,20 @@ void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
                             (unsigned long long)address, (unsigned long long)max_size,
                             (unsigned long long)image.info.guest_address, image.info.size.width,
                             image.info.size.height, u32(image.info.pixel_format), u32(image.flags),
-                            image.info.guest_address == address ? "" : " (not at its start: kept)");
+                            at_start || whole ? "" : " (partly written: kept)");
             }
         }
-        // Only consider images that match base address.
-        // TODO: Maybe also consider subresources
-        if (image.info.guest_address != address) {
+        if (!at_start && !whole) {
             return;
         }
+        inside |= !at_start;
         // Ensure image is reuploaded when accessed again.
         WatchImage(image, "GPU write (marked for refresh)");
         image.flags |= ImageFlagBits::GpuDirty;
     });
+    if (!start_only && !inside) {
+        memo = {address, max_size, generation};
+    }
 }
 
 void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
