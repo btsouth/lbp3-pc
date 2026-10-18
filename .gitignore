@@ -30,3 +30,13 @@ patches.json
 /docs/ISSUE_ACTION_PLAN_*.md
 # AMD FidelityFX DLLs (FSR 4.1.1 is built from the user's own): never in the repository
 *.dll
+# Game files and dumps never belong here: game folders, packages, executables, frame dumps
+/CUSA*/
+*.pkg
+eboot.bin
+*.raw
+*.AppImage
+# Nix build outputs and machine-local markers
+/result
+/result-*
+.devbox-keep
