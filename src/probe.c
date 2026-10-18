@@ -613,7 +613,9 @@ int main(int argc, char **argv) {
     }
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     entered_game=1;
-    struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
+    /* Room for 64 arguments: games add /app0/commandline.txt's arguments into this array in
+     * place (Ratchet & Clank, 0xe94790, up to 64), which overran a 2-entry one on our stack. */
+    static struct { uint64_t argc; const char *argv[65]; } params = {1, {"/app0/eboot.bin", NULL}};
 #ifdef _WIN32
     typedef void (ABI *Entry)(void *, void (ABI *)(void));
     ((Entry)(image + entry))(&params, guest_exit);
