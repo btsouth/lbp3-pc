@@ -19,6 +19,8 @@ class RestartResolutionTests(unittest.TestCase):
             # validate writes against a single ELF load segment spanning the game image.
             out = data / 'out'
             out.mkdir()
+            # Bloodborne: the built-in patches are its addresses (patches.py reads the title).
+            (out / 'analysis.json').write_text(json.dumps({'sfo': {'TITLE_ID': 'CUSA03173'}}))
             elf = bytearray(120)
             struct.pack_into('<Q', elf, 0x20, 64)
             struct.pack_into('<HH', elf, 0x36, 56, 1)
