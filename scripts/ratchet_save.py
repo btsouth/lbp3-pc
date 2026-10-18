@@ -16,6 +16,15 @@ game's save code (eboot file offsets, vaddr + 0x4000):
   level mask (bit n = level number n; IsLevelUnlocked 0x4d9890 is what the galactic map asks),
   u32, 10 + 10 + 15 bytes, 5 single bytes, 19 bytes unlock order (UnlockLevel 0x4d98a0 gives a
   newly unlocked level max + 1), 79 bytes of story flags.
+- HeroSystem: inventories as (u32 CRC-32 of the class name, u32 length, data); data is 'INVT',
+  u32 item count, then per item (u32 class CRC, u32 length, blob), then more fields (loader
+  0x101e470). GameEquipInventory holds the weapons: WeaponItemPrius blobs are big-endian, u16
+  field mask, u64 item GUID, u64 asset id of configs/equipment/<item>_item.config, then a u16
+  inventory index at bytes 22..23 (1001, 1002, ...) and zeros (no XP, level or mods).
+  The game keeps added weapon items (it fills a big-endian float at bytes 32..35, likely ammo,
+  and drops wpn_bouncer), but its Weapons menu still lists none: something else gates it.
+  Asset ids are 0x8000000000000000 | crc64(path) >> 2 (CRC-64/ECMA reflected, seeded with
+  its polynomial; 0xe9e120).
 
 Level numbers come from configs/gamemacroconfig/gamemacroconfig.config, spawn points from each
 levels/<name>/<name>.level (hero single spawn points; every level has a <CODE>_default one).
@@ -32,6 +41,8 @@ VALUE_SIZES = {2: 4, 3: 8, 6: 4}  # types in the Checkpoint object: u32, u64, s3
 MACRO_SIZE = 150
 MACRO_CURRENT, MACRO_MASK, MACRO_ORDER = 0, 4, 0x34
 LEVEL_COUNT = 19  # unlock order bytes: level numbers 0..18
+INVENTORY_MAGIC = b'TVNI'
+WEAPON_INDEX = slice(22, 24)
 
 
 def crc32(text):
@@ -44,7 +55,28 @@ def crc32(text):
     return crc
 
 
+def asset_id(path):
+    """The game's asset id of a path like configs/equipment/wpn_ryno_item.config."""
+    poly = 0xC96C5795D7870F42
+    crc = poly
+    for byte in path.lower().replace('\\', '/').encode():
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (poly if crc & 1 else 0)
+    return 1 << 63 | crc >> 2
+
+
 SECTION_CHECKPOINT = crc32('Checkpoint')
+SECTION_HERO = crc32('HeroSystem')
+EQUIP_INVENTORY = crc32('GameEquipInventory')
+WEAPON_ITEM = crc32('WeaponItemPrius')
+# Player weapons and the gadgets that are weapon items (WeaponItemConfig). The other gadgets
+# (boots, packs, hoverboard, ...) use their own item classes and are not written.
+WEAPONS = ['wpn_blaster', 'wpn_fusion_grenade', 'wpn_pyrocitor', 'wpn_buzzblades',
+           'wpn_glove_of_doom', 'wpn_zurkon', 'wpn_groovitron', 'wpn_sheepinator',
+           'wpn_plasma_striker', 'wpn_warmonger', 'wpn_predator_launcher', 'wpn_bouncer',
+           'wpn_pixelizer', 'wpn_thumper', 'wpn_ryno', 'gdgt_swingshot', 'gdgt_trespasser',
+           'gdgt_hologuise', 'gdgt_hydrodisplacer']
 SECTION_MACRO = crc32('RCPS4MacroSystem')
 SECTION_NAMES = {crc32(n): n for n in (
     'Checkpoint', 'HeroSystem', 'WeaponUpgradeSystem', 'XPSystem', 'ActorSaveSystem',
@@ -102,6 +134,85 @@ def section(data, sid):
     raise SaveError(f'no section {SECTION_NAMES.get(sid, hex(sid))}')
 
 
+def rebuild(data, replace):
+    """The save with section payloads replaced ({id: bytes}), sections re-laid out in their
+    order in the file at 16-byte boundaries, the table and size updated."""
+    sections = parse(data)
+    first = min(offset for _, offset, _ in sections)
+    out = bytearray(data[:first])
+    placed = {}
+    for sid, offset, length in sorted(sections, key=lambda s: s[1]):
+        out += b'\0' * (-len(out) % 16)
+        placed[sid] = len(out)
+        out += replace.get(sid, data[offset:offset + length])
+    for i, (sid, offset, length) in enumerate(sections):
+        new = replace.get(sid, data[offset:offset + length])
+        struct.pack_into('<III', out, 16 + 12 * i, sid, placed[sid], len(new))
+    struct.pack_into('<I', out, 8, len(out))
+    return bytes(out)
+
+
+def equip_items(hero):
+    """(record offset, items start, [(offset, class, blob)], items end) of the equip inventory
+    in a HeroSystem payload."""
+    key = struct.pack('<I', EQUIP_INVENTORY)
+    at = hero.find(key)
+    while at != -1 and hero[at + 8:at + 12] != INVENTORY_MAGIC:
+        at = hero.find(key, at + 1)
+    if at == -1:
+        raise SaveError('no GameEquipInventory in HeroSystem')
+    length = struct.unpack_from('<I', hero, at + 4)[0]
+    count = struct.unpack_from('<I', hero, at + 12)[0]
+    items, pos = [], at + 16
+    for _ in range(count):
+        kind, size = struct.unpack_from('<II', hero, pos)
+        items.append((pos, kind, hero[pos + 8:pos + 8 + size]))
+        pos += 8 + size
+    if pos > at + 8 + length:
+        raise SaveError('equip inventory items run past its record')
+    return at, at + 16, items, pos
+
+
+def owned_weapons(data):
+    offset, length = section(data, SECTION_HERO)
+    _, _, items, _ = equip_items(data[offset:offset + length])
+    return {int.from_bytes(blob[10:18], 'big') for _, kind, blob in items if kind == WEAPON_ITEM}
+
+
+def add_weapons(data):
+    """The save with every weapon of WEAPONS in the equip inventory (copies of an owned
+    WeaponItemPrius with a new GUID, asset id and the next inventory index)."""
+    offset, length = section(data, SECTION_HERO)
+    hero = data[offset:offset + length]
+    at, _, items, end = equip_items(hero)
+    weapons = [blob for _, kind, blob in items if kind == WEAPON_ITEM and len(blob) >= 24]
+    if not weapons:
+        raise SaveError('no weapon item to copy in the equip inventory')
+    template = weapons[0]
+    owned = {int.from_bytes(blob[10:18], 'big') for blob in weapons}
+    index = max(int.from_bytes(blob[WEAPON_INDEX], 'big') for _, _, blob in items
+                if len(blob) >= 24)
+    added = b''
+    for name in WEAPONS:
+        aid = asset_id(f'configs/equipment/{name}_item.config')
+        if aid in owned:
+            continue
+        index += 1
+        guid = crc32(name) << 32 | crc32(name[::-1])
+        blob = bytearray(template)
+        blob[2:10] = guid.to_bytes(8, 'big')
+        blob[10:18] = aid.to_bytes(8, 'big')
+        blob[WEAPON_INDEX] = index.to_bytes(2, 'big')
+        added += struct.pack('<II', WEAPON_ITEM, len(blob)) + bytes(blob)
+    if not added:
+        return data
+    record_length, count = struct.unpack_from('<I', hero, at + 4)[0], struct.unpack_from('<I', hero, at + 12)[0]
+    new = bytearray(hero[:end] + added + hero[end:])
+    struct.pack_into('<I', new, at + 4, record_length + len(added))
+    struct.pack_into('<I', new, at + 12, count + len(added) // (8 + len(template)))
+    return rebuild(data, {SECTION_HERO: bytes(new)})
+
+
 def checkpoint_fields(data):
     """{field name: (offset, type, value)} of the Checkpoint object."""
     offset, length = section(data, SECTION_CHECKPOINT)
@@ -146,12 +257,17 @@ def info(data):
     unlocked = [row[0] for row in LEVELS if row[2] and mask >> row[2] & 1]
     lines.append(f'macro: current level number {current}, unlocked mask {mask:#x} '
                  f'({", ".join(unlocked) or "none"})')
+    owned = owned_weapons(data)
+    known = {asset_id(f'configs/equipment/{n}_item.config'): n for n in WEAPONS}
+    lines.append(f'weapon items: {len(owned)} '
+                 f'({", ".join(sorted(known.get(a, hex(a)) for a in owned)) or "none"})')
     return '\n'.join(lines)
 
 
-def unlock(data, level=None):
-    """A copy with every planet unlocked; with `level`, the game continues at its default spawn."""
-    out = bytearray(data)
+def unlock(data, level=None, weapons=False):
+    """A copy with every planet unlocked; with `level`, the game continues at its default spawn;
+    with `weapons`, every weapon item of WEAPONS is added."""
+    out = bytearray(add_weapons(data) if weapons else data)
     m = macro(out)
     _, mask = struct.unpack_from('<II', out, m)
     order = out[m + MACRO_ORDER:m + MACRO_ORDER + LEVEL_COUNT]
@@ -177,12 +293,12 @@ def unlock(data, level=None):
     return bytes(out)
 
 
-def write_save_dir(source, target, level=None):
+def write_save_dir(source, target, level=None, weapons=False):
     """Copy a save folder (rcps4/ and rcps4.sce_sys/ of savedata/1/CUSA01073) with rcps4.save
     and rcps4.backup replaced by the unlocked save. The source is only read."""
     source, target = Path(source), Path(target)
     data = (source / 'rcps4' / 'rcps4.save').read_bytes()
-    result = unlock(data, level)
+    result = unlock(data, level, weapons)
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(source, target)
@@ -201,6 +317,8 @@ def main(argv=None):
     make.add_argument('target', type=Path, help='new CUSA01073 folder (replaced)')
     make.add_argument('--level', choices=[r[0] for r in LEVELS if r[3]],
                       help='continue at this level\'s default spawn point')
+    make.add_argument('--weapons', action='store_true',
+                      help='also add every weapon item (kept by the game, not yet listed in its Weapons menu)')
     sub.add_parser('levels', help='list levels and spawn points')
     args = parser.parse_args(argv)
     try:
@@ -209,7 +327,7 @@ def main(argv=None):
         elif args.command == 'unlock':
             if args.target.resolve() == args.source.resolve():
                 raise SaveError('target must differ from the source')
-            print(info(write_save_dir(args.source, args.target, args.level)))
+            print(info(write_save_dir(args.source, args.target, args.level, args.weapons)))
         else:
             for name, enum, number, spawn, instance in LEVELS:
                 print(f'{enum:2} {name:24} number {number:2} {spawn or "-":14} '

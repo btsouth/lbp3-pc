@@ -24,6 +24,23 @@ def macro_section(current=1, mask=0):
     return bytes(data)
 
 
+def weapon_blob(name, index, mask=b'\xff\x3f'):
+    aid = rs.asset_id(f'configs/equipment/{name}_item.config')
+    return (mask + (0x1122334455667788).to_bytes(8, 'big') + aid.to_bytes(8, 'big') +
+            b'\x01\0\0\0' + index.to_bytes(2, 'big') + b'\0' * 95)
+
+
+def hero_section():
+    items = [(rs.crc32('MeleeWeaponItemPrius'), weapon_blob('wpn_wrench', 1001)),
+             (rs.WEAPON_ITEM, weapon_blob('gdgt_swingshot', 1002))]
+    body = rs.INVENTORY_MAGIC + struct.pack('<I', len(items))
+    body += b''.join(struct.pack('<II', kind, len(blob)) + blob for kind, blob in items)
+    body += b'\x01\0\0\xff' + b'\0' * 20  # fields after the items
+    general = rs.INVENTORY_MAGIC + struct.pack('<II', 0, 0)
+    return (b'\0' + struct.pack('<II', rs.crc32('GameGeneralInventory'), len(general)) + general +
+            struct.pack('<II', rs.EQUIP_INVENTORY, len(body)) + body + b'\0' * 7)
+
+
 def build(sections):
     header = 16 + 12 * len(sections)
     table, blob, offset = b'', b'', header
@@ -38,8 +55,8 @@ def build(sections):
 
 
 def sample():
-    return build([(rs.SECTION_MACRO, macro_section()), (rs.crc32('XPSystem'), b'\0' * 8),
-                  (rs.SECTION_CHECKPOINT, checkpoint_section())])
+    return build([(rs.SECTION_MACRO, macro_section()), (rs.SECTION_HERO, hero_section()),
+                  (rs.crc32('XPSystem'), b'\0' * 8), (rs.SECTION_CHECKPOINT, checkpoint_section())])
 
 
 class Crc32Tests(unittest.TestCase):
@@ -49,12 +66,20 @@ class Crc32Tests(unittest.TestCase):
         self.assertEqual(rs.crc32('Checkpoint'), 0xd436a987)
         self.assertEqual(rs.crc32('RCPS4MacroSystem'), 0x0028338a)
         self.assertEqual(rs.crc32('VEL_1_02'), 0x1910a3e7)
+        self.assertEqual(rs.crc32('WeaponItemPrius'), 0xa89e9c3c)
+        self.assertEqual(rs.crc32('GameEquipInventory'), 0x62d731c8)
+
+    def test_asset_ids_match_the_games(self):
+        # From the game's layout.csv (built file names) and its save.
+        self.assertEqual(rs.asset_id('levels/veldin/veldin.level'), 0x8804d604ded7f9ee)
+        self.assertEqual(rs.asset_id('configs\\equipment\\wpn_wrench_item.config'),
+                         0xa178983a0ccbec09)
 
 
 class ParseTests(unittest.TestCase):
     def test_reads_sections_and_checkpoint(self):
         data = sample()
-        self.assertEqual(len(rs.parse(data)), 3)
+        self.assertEqual(len(rs.parse(data)), 4)
         fields = rs.checkpoint_fields(data)
         self.assertEqual(fields['CurrentLevel'][2], 0)
         self.assertEqual(fields['CurrentCheckpoint'][2], 0x1910a3e7)
@@ -75,6 +100,35 @@ class ParseTests(unittest.TestCase):
                              (rs.SECTION_CHECKPOINT, checkpoint_section())])
         with self.assertRaises(rs.SaveError):
             rs.unlock(short_macro)
+
+
+class WeaponTests(unittest.TestCase):
+    def test_rebuild_without_changes_is_identity(self):
+        data = sample()
+        self.assertEqual(rs.rebuild(data, {}), data)
+
+    def test_adds_every_weapon_once(self):
+        data = sample()
+        self.assertEqual(rs.owned_weapons(data),
+                         {rs.asset_id('configs/equipment/gdgt_swingshot_item.config')})
+        out = rs.add_weapons(data)
+        owned = rs.owned_weapons(out)
+        self.assertEqual(owned, {rs.asset_id(f'configs/equipment/{n}_item.config')
+                                 for n in rs.WEAPONS})
+        offset, length = rs.section(out, rs.SECTION_HERO)
+        at, _, items, end = rs.equip_items(out[offset:offset + length])
+        self.assertEqual(len(items), 1 + len(rs.WEAPONS))
+        indices = [int.from_bytes(blob[rs.WEAPON_INDEX], 'big') for _, _, blob in items]
+        self.assertEqual(indices, list(range(1001, 1001 + len(items))))
+        guids = {blob[2:10] for _, _, blob in items[2:]}
+        self.assertEqual(len(guids), len(items) - 2)
+        # The fields after the items and the other sections survive the move.
+        hero = out[offset:offset + length]
+        self.assertEqual(hero[end:end + 4], b'\x01\0\0\xff')
+        self.assertEqual(rs.checkpoint_fields(out)['CurrentCheckpoint'][2], 0x1910a3e7)
+        self.assertEqual(out[rs.macro(out):rs.macro(out) + 150], macro_section())
+        self.assertEqual(rs.add_weapons(out), out)
+        self.assertEqual(rs.unlock(data, weapons=True), rs.unlock(out))
 
 
 class UnlockTests(unittest.TestCase):
