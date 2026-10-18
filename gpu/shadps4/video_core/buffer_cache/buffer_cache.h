@@ -103,6 +103,11 @@ public:
     }
 
     /// Retrieves the stream buffer.
+    /// ObtainBuffer without writing rendered images inside the range to memory first: for a
+    /// caller that overwrites the whole range (a fill).
+    std::pair<const Buffer*, u64> ObtainBufferUnsynced(VAddr device_addr, u32 size,
+                                                       bool is_written, bool is_texel_buffer);
+
     StreamBuffer& GetStreamBuffer() noexcept {
         return stream_buffer;
     }
@@ -383,8 +388,6 @@ private:
 
     /// Writes an image's contents into an arena at arena_offset (tiled as the game stores it).
     bool WriteImageToMemory(Image& image, const Buffer* arena, u64 arena_offset);
-    std::pair<const Buffer*, u64> ObtainBufferUnsynced(VAddr device_addr, u32 size,
-                                                       bool is_written, bool is_texel_buffer);
     /// bbport BB_LAYER_MEMORY (statistics): a binding not whole in one chunk.
     void NoteLayerMiss(VAddr address, u64 size, bool is_written);
     /// bbport BB_LAYER_MEMORY (buffer_cache_layer.cpp): a binding through the layer's memory

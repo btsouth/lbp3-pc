@@ -448,6 +448,11 @@ private:
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline, bool dry_run = false);
     bool IsComputeImageClear(const Pipeline* pipeline);
+    /// bbport: a masked fill compute shader with a full mask, as a fill and image clears.
+    bool IsComputeMaskedFill(const Pipeline* pipeline);
+    /// bbport: a dword of a stage's buffer as the shader reads it (the constant ring's copy, or
+    /// the game's memory when the CPU has it); nullopt if neither.
+    std::optional<u32> ReadStageDword(const Shader::Info& info, u32 index, u32 offset);
 
 private:
     friend class VideoCore::BufferCache;

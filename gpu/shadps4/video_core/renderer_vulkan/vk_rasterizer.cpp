@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <dlfcn.h>
 #include <map>
+#include <set>
+#include <tuple>
 #include <unordered_set>
 #include <xxhash.h>
 #include "video_core/renderer_vulkan/ui_composition.h"
@@ -17,6 +19,7 @@
 #include "bbport_free_check.h"
 #include "bbport_guest_memory.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
+#include "video_core/renderer_vulkan/fill_clear_value.h"
 #include "common/hash.h"
 #include "common/debug.h"
 #include "core/debug_state.h"
@@ -2418,8 +2421,8 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     {
         // bbport BB_HLE_STATS=1 (diagnostics): how often the compute shader substitutions fire.
         static const bool hle_stats = std::getenv("BB_HLE_STATS") != nullptr;
-        // BB_HLE_OFF=mask (experiment): 1 image copy, 2 metadata clear, 4 image clear run as the
-        // game's shaders.
+        // BB_HLE_OFF=mask (experiment): 1 image copy, 2 metadata clear, 4 image clear, 8 masked
+        // fill run as the game's shaders.
         static const u32 hle_off = [] {
             const char* env = std::getenv("BB_HLE_OFF");
             return env ? u32(std::strtoul(env, nullptr, 0)) : 0u;
@@ -2431,17 +2434,19 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         const int which = !(hle_off & 1) && IsComputeImageCopy(pipeline)   ? 1
                           : !(hle_off & 2) && IsComputeMetaClear(pipeline) ? 2
                           : !(hle_off & 4) && IsComputeImageClear(pipeline) ? 3
+                          : !(hle_off & 8) && IsComputeMaskedFill(pipeline)  ? 4
                                                                              : 0;
         if (hle_stats) {
-            static std::array<u64, 4> counts{};
+            static std::array<u64, 5> counts{};
             static auto last = std::chrono::steady_clock::now();
             ++counts[which];
             if (std::chrono::steady_clock::now() - last > std::chrono::seconds(5)) {
                 last = std::chrono::steady_clock::now();
                 std::printf("HLE stats (5 s): image copy %llu, meta clear %llu, image clear %llu, "
-                            "other binds %llu\n",
+                            "masked fill %llu, other binds %llu\n",
                             (unsigned long long)counts[1], (unsigned long long)counts[2],
-                            (unsigned long long)counts[3], (unsigned long long)counts[0]);
+                            (unsigned long long)counts[3], (unsigned long long)counts[4],
+                            (unsigned long long)counts[0]);
                 counts = {};
             }
         }
@@ -3103,6 +3108,204 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
         .extent = image1.info.resources,
     };
     runtime.ClearImage(&image1, range, clear);
+    return true;
+}
+
+std::optional<u32> Rasterizer::ReadStageDword(const Shader::Info& info, u32 index, u32 offset) {
+    const auto& desc = info.buffers[index];
+    if (const RingBinding* ring = num_ring_stages ? FindRingBinding(info, index) : nullptr) {
+        if (offset + 4 > ring->size) {
+            return std::nullopt;
+        }
+        u32 value;
+        std::memcpy(&value, constant_ring->Data(ring->offset) + offset, sizeof(value));
+        return value;
+    }
+    const AmdGpu::Buffer sharp = desc.GetSharp(info);
+    const VAddr address = sharp.base_address + offset;
+    if (sharp.base_address == 0 || offset + 4 > sharp.GetSize() ||
+        !memory->IsValidGpuMapping(address, 4) || buffer_cache.IsRegionGpuModified(address, 4)) {
+        return std::nullopt;
+    }
+    u32 value;
+    std::memcpy(&value, std::bit_cast<const void*>(address), sizeof(value));
+    return value;
+}
+
+
+bool Rasterizer::IsComputeMaskedFill(const Pipeline* pipeline) {
+    // bbport: a compute shader that fills memory under a mask, one dword per thread:
+    //   i = group * 64 + thread; if (i < cb[0] && i < user data 14)
+    //       dst[i] = dst[i] & ~mask[i & cb[1]] | value[i & cb[1]] & mask[i & cb[1]]
+    // (buffers: cb, mask, dst, value). LBP3 clears its two 16 MB light atlases with it in one
+    // 64 MB dispatch every frame. Run as itself, it needs the rendered atlases in memory first
+    // and reuploads them after: 32 MB each way per frame. With a full mask it is a plain fill:
+    // the memory is filled on the GPU and the images wholly inside it are cleared, nothing is
+    // read back. Other masks (the scene alpha clear) run as the shader. The program is known by
+    // its hash; the binding layout is checked as well.
+    static constexpr std::array<u64, 1> MaskedFillShaders = {0x079cfe79e0ada38cull};
+    if (!pipeline->IsCompute()) {
+        return false;
+    }
+    const auto& info = pipeline->GetStage(Shader::SwStage::Compute);
+    if (std::ranges::find(MaskedFillShaders, info.pgm_hash) == MaskedFillShaders.end()) {
+        return false;
+    }
+    const auto& cs_pgm = CsRegs();
+    static const bool log = std::getenv("BB_MASKED_FILL_LOG") != nullptr;
+    if (log) {
+        static std::atomic<u32> printed{0};
+        if (printed++ < 4) {
+            std::string text;
+            for (const auto& desc : info.buffers) {
+                const auto sharp = desc.GetSharp(info);
+                text += fmt::format(" [{} special {} written {} formatted {} at {:#x} size {} "
+                                    "stride {}]",
+                                    u32(desc.buffer_type), desc.IsSpecial(), desc.is_written,
+                                    desc.is_formatted, sharp.base_address, sharp.GetSize(),
+                                    sharp.GetStride());
+            }
+            std::printf("Masked fill: cs threads %ux%ux%u groups %ux%ux%u, %zu images, user "
+                        "data %zu, ring stages %u, buffers%s\n",
+                        cs_pgm.num_thread_x.full, cs_pgm.num_thread_y.full,
+                        cs_pgm.num_thread_z.full, cs_pgm.dim_x, cs_pgm.dim_y, cs_pgm.dim_z,
+                        info.images.size(), info.UserData().size(), num_ring_stages,
+                        text.c_str());
+        }
+    }
+    if (cs_pgm.num_thread_x.full != 64 || cs_pgm.num_thread_y.full != 1 ||
+        cs_pgm.num_thread_z.full != 1 || cs_pgm.dim_y != 1 || cs_pgm.dim_z != 1 ||
+        ShaderBufferCount(info) != 4 || info.buffers.size() != 4 || !info.images.empty()) {
+        return false;
+    }
+    // The destination is a raw or a 32-bit formatted buffer (the shader moves whole dwords).
+    const auto& dst_desc = info.buffers[2];
+    if (!dst_desc.is_written || info.buffers[0].is_written || info.buffers[1].is_written ||
+        info.buffers[3].is_written) {
+        return false;
+    }
+    if (dst_desc.is_formatted) {
+        const auto dst_sharp = dst_desc.GetSharp(info);
+        const auto nfmt = dst_sharp.GetNumberFmt();
+        if (dst_sharp.GetDataFmt() != AmdGpu::DataFormat::Format32 ||
+            (nfmt != AmdGpu::NumberFormat::Float && nfmt != AmdGpu::NumberFormat::Uint &&
+             nfmt != AmdGpu::NumberFormat::Sint)) {
+            return false;
+        }
+    }
+    const auto count = ReadStageDword(info, 0, 0);
+    const auto period = ReadStageDword(info, 0, 4);
+    const auto mask = ReadStageDword(info, 1, 0);
+    const auto value = ReadStageDword(info, 3, 0);
+    const auto user_data = info.UserData();
+    if (log) {
+        static std::atomic<u32> printed{0};
+        if (printed++ < 4) {
+            std::printf("Masked fill: count %s period %s mask %s value %s ud14 %s\n",
+                        count ? fmt::format("{:#x}", *count).c_str() : "?",
+                        period ? fmt::format("{:#x}", *period).c_str() : "?",
+                        mask ? fmt::format("{:#x}", *mask).c_str() : "?",
+                        value ? fmt::format("{:#x}", *value).c_str() : "?",
+                        user_data.size() > 14 ? fmt::format("{:#x}", user_data[14]).c_str() : "?");
+        }
+    }
+    if (!count || !period || !mask || !value || user_data.size() <= 14 || *period != 0) {
+        return false;
+    }
+    const AmdGpu::Buffer dst = dst_desc.GetSharp(info);
+    const u64 threads = u64(cs_pgm.dim_x) * 64;
+    const u64 dwords = std::min({u64(*count), u64(user_data[14]), threads});
+    const u64 bytes = std::min<u64>(dwords * 4, dst.GetSize());
+    if (dst.GetStride() != 4 || dst.base_address == 0 || dst.base_address % 4 != 0 ||
+        bytes % 4 != 0) {
+        return false;
+    }
+    if (*mask == 0 || bytes == 0) {
+        return true; // writes back what it read
+    }
+    if (*mask != ~0u) {
+        static std::atomic<u32> printed{0};
+        if (log && printed++ < 8) {
+            std::printf("Masked fill: %#llx+%#llx mask %#x value %#x: the shader\n",
+                        (unsigned long long)dst.base_address, (unsigned long long)bytes, *mask,
+                        *value);
+        }
+        return false;
+    }
+    const VAddr begin = dst.base_address;
+    const VAddr end = begin + bytes;
+    // The color images wholly inside are cleared to the color whose bytes are the value (where
+    // the format gives them exactly); images partly inside keep their contents, as a storage
+    // write leaves them (InvalidateMemoryFromGPU).
+    // The texture binding helper may still be adding images (it can move them in memory):
+    // it finishes before the lookup, as before any change of image state.
+    runtime.BeforeImageAccess();
+    boost::container::small_vector<std::pair<VideoCore::ImageId, vk::ClearValue>, 16> inside;
+    bool clearable = true;
+    std::string blocker;
+    texture_cache.ForEachImageInRegion(begin, bytes, [&](VideoCore::ImageId id,
+                                                         VideoCore::Image& image) {
+        // Placeholders (the stencil address of a depth buffer) have no contents.
+        if (image.info.guest_address < begin ||
+            image.info.guest_address + image.info.guest_size > end ||
+            image.info.pixel_format == vk::Format::eUndefined) {
+            return;
+        }
+        // A depth buffer in the range (LBP3's aliases a light atlas) clears to 0 exactly.
+        if (image.info.props.is_depth && *value == 0 &&
+            !texture_cache.IsMeta(image.info.guest_address)) {
+            inside.emplace_back(id, vk::ClearValue{.depthStencil = {.depth = 0.0f, .stencil = 0}});
+            return;
+        }
+        const auto color = FillClearValue(image.info.pixel_format, *value);
+        if (!color || image.info.props.is_depth || image.info.props.is_block ||
+            (*value != 0 && image.info.num_bits != 32) ||
+            texture_cache.IsMeta(image.info.guest_address)) {
+            if (clearable) {
+                blocker = fmt::format(" (not clearable: {:#x} {} {}x{} depth {} meta {})",
+                                      image.info.guest_address,
+                                      vk::to_string(image.info.pixel_format), image.info.size.width,
+                                      image.info.size.height, bool(image.info.props.is_depth),
+                                      texture_cache.IsMeta(image.info.guest_address).has_value());
+            }
+            clearable = false;
+            return;
+        }
+        inside.emplace_back(id, vk::ClearValue{.color = *color});
+    });
+    // BB_MASKED_FILL_LOG=1 (diagnostics): the first 32 distinct fills.
+    if (log) {
+        static std::atomic<u32> printed{0};
+        static std::mutex mutex;
+        static std::set<std::tuple<VAddr, u64, u32, u32>> seen;
+        std::scoped_lock lk{mutex};
+        if (seen.emplace(begin, bytes, *mask, *value).second && printed++ < 32) {
+            std::printf("Masked fill: %#llx+%#llx mask %#x value %#x, %zu images inside: %s%s\n",
+                        (unsigned long long)begin, (unsigned long long)bytes, *mask, *value,
+                        inside.size(), clearable ? "fill and clears" : "the shader",
+                        blocker.c_str());
+        }
+    }
+    if (!clearable) {
+        return false;
+    }
+    RangeLog("masked fill", begin, bytes, *value);
+    if (FrameCapture::Active()) {
+        FrameCapture::Note(fmt::format("\n  masked fill cs {:016x}: {:#x}+{:#x} = {:#x}, {} "
+                                       "images cleared",
+                                       info.pgm_hash, begin, bytes, *value, inside.size())
+                               .c_str());
+    }
+    const auto [buffer, offset] = buffer_cache.ObtainBufferUnsynced(begin, u32(bytes), true, false);
+    runtime.FillBuffer(buffer, offset, bytes, *value);
+    for (const auto& [id, clear] : inside) {
+        auto& image = texture_cache.GetImage(id);
+        const VideoCore::SubresourceRange range = {.base = {.level = 0, .layer = 0},
+                                                   .extent = image.info.resources};
+        runtime.ClearImage(&image, range, clear);
+        // Memory holds the same texels: nothing to write back or upload.
+        image.flags &= ~VideoCore::ImageFlagBits::GpuModified;
+    }
     return true;
 }
 

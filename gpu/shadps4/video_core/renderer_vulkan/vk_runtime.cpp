@@ -754,17 +754,27 @@ void Runtime::ClearImage(VideoCore::Image* dst, const VideoCore::SubresourceRang
         FlushBarriers();
     }
 
+    // bbport: a depth (and stencil) image takes clear_value.depthStencil.
+    const bool is_depth = dst->info.props.is_depth;
     const vk::ImageSubresourceRange vk_range = {
-        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .aspectMask = is_depth ? dst->aspect_mask : vk::ImageAspectFlagBits::eColor,
         .baseMipLevel = range.base.level,
         .levelCount = range.extent.levels,
         .baseArrayLayer = range.base.layer,
         .layerCount = range.extent.layers,
     };
-    scheduler.Record([image = dst->GetImage(), color = clear_value.color,
-                      vk_range](vk::CommandBuffer cmdbuf) {
-        cmdbuf.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, color, vk_range);
-    });
+    if (is_depth) {
+        scheduler.Record([image = dst->GetImage(), depth_stencil = clear_value.depthStencil,
+                          vk_range](vk::CommandBuffer cmdbuf) {
+            cmdbuf.clearDepthStencilImage(image, vk::ImageLayout::eTransferDstOptimal,
+                                          depth_stencil, vk_range);
+        });
+    } else {
+        scheduler.Record([image = dst->GetImage(), color = clear_value.color,
+                          vk_range](vk::CommandBuffer cmdbuf) {
+            cmdbuf.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, color, vk_range);
+        });
+    }
 
     dst->flags |= VideoCore::ImageFlagBits::GpuModified;
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
