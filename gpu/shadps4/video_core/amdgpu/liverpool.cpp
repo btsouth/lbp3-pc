@@ -676,9 +676,10 @@ void RunEventWriteEos(Vulkan::Rasterizer& rasterizer, const u8* data) {
     // bbport: as an end-of-pipe fence (RunEventWriteEop), the draw recording thread does not
     // wait: the Vulkan recording thread writes the label after the copies queued before it.
     // Ratchet & Clank ends ~300 shader passes a second with one; the waits were ~12% of this
-    // thread.
+    // thread. Experiment bit 4: the waits, as before (A/B).
     if (event_eos.command == PM4CmdEventWriteEos::Command::SignalFence &&
-        Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
+        Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences) &&
+        !BbToggle::Experiment(4)) {
         rasterizer.ProcessDownloadImages();
         const PM4CmdEventWriteEos eos = event_eos;
         rasterizer.SignalAfterHostCopies([eos] { eos.SignalFence(&WriteEosLabel); });
