@@ -177,7 +177,10 @@ static void wall_time(void) {
     assert(t.value[1]>=0 && t.value[1]<1000000);
     assert(t.canary==0xabcdef && z.canary==0x123456);
     assert(get(NULL,NULL)==0 && get(NULL,z.value)==0);
-    assert(!runtime_resolve("n88vx3C5nW8#q#q",0));
+    /* The libc import of the same NID is served too (by symbol name) and tells the time. */
+    GetTime libc_get=(GetTime)runtime_resolve("n88vx3C5nW8#q#q",0);
+    assert(libc_get && libc_get(t.value,z.value)==0);
+    assert(t.value[0]>=before && t.value[1]>=0 && t.value[1]<1000000);
 }
 static void live_streaming(void) {
     typedef int32_t (ABI *Enable)(int32_t);
