@@ -112,12 +112,12 @@ class RestartResolutionTests(unittest.TestCase):
 class RatchetPacingTests(unittest.TestCase):
     """The frame rate preset's pacing at the vblank rate run.sh picks (or is given)."""
 
-    def launch(self, **extra):
+    def launch(self, keys=('BB_VBLANK_HZ', 'BB_FPS_LIMIT'), title='CUSA01073', **extra):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
             out = data / 'out'
             out.mkdir()
-            (out / 'analysis.json').write_text(json.dumps({'sfo': {'TITLE_ID': 'CUSA01073'}}))
+            (out / 'analysis.json').write_text(json.dumps({'sfo': {'TITLE_ID': title}}))
             (out / 'eboot.elf').write_bytes(bytes(120))  # not 1.00: no writes, pacing still set
             (data / 'eboot.bin').touch()
             config = data / 'bbport.ini'
@@ -133,11 +133,12 @@ class RatchetPacingTests(unittest.TestCase):
                 'import json, os\n'
                 'from pathlib import Path\n'
                 'Path(os.environ["BB_CONFIG"]).with_name("environment").write_text(json.dumps('
-                '{key: os.environ.get(key) for key in ("BB_VBLANK_HZ", "BB_FPS_LIMIT")}))\n')
+                '{key: os.environ.get(key) for key in ' + repr(tuple(keys)) + '}))\n')
             probe.chmod(0o755)
             env = dict(os.environ, BB_PREBUILT='1', BB_PROBE=str(probe), PYTHON=str(python),
                        BB_DATA_DIR=str(data), BB_CONFIG=str(config), BB_GAME_DIR=str(data))
-            for key in ('BB_FPS', 'BB_VBLANK_HZ', 'BB_FPS_LIMIT', 'BB_RENDER_RES', 'BB_LIVE_RES'):
+            for key in ('BB_FPS', 'BB_VBLANK_HZ', 'BB_FPS_LIMIT', 'BB_RENDER_RES', 'BB_LIVE_RES',
+                        'BB_FSR1'):
                 env.pop(key, None)
             env.update(extra)
             subprocess.run([shutil.which('bash'), 'run.sh'], cwd=ROOT, env=env,
@@ -161,3 +162,10 @@ class RatchetPacingTests(unittest.TestCase):
     def test_explicit_frame_limit_wins(self):
         self.assertEqual(self.launch(BB_FPS='60', BB_VBLANK_HZ='240', BB_FPS_LIMIT='50'),
                          {'BB_VBLANK_HZ': '240', 'BB_FPS_LIMIT': '50'})
+
+    def test_presenter_upscale_is_fsr1_for_ratchet_only(self):
+        # Ratchet stays at 1920x1080: a larger screen gets FSR 1 instead of a bilinear stretch.
+        self.assertEqual(self.launch(keys=('BB_FSR1',), BB_FPS='60'), {'BB_FSR1': '1'})
+        self.assertEqual(self.launch(keys=('BB_FSR1',), BB_FPS='60', BB_FSR1='0'), {'BB_FSR1': '0'})
+        self.assertEqual(self.launch(keys=('BB_FSR1',), title='CUSA03173', BB_FPS='30'),
+                         {'BB_FSR1': None})
