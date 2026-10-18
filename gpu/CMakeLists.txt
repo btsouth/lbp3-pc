@@ -192,6 +192,10 @@ target_compile_options(scene-resolution-test PRIVATE -UNDEBUG -fPIC)
 set_source_files_properties(../tests/test_scene_resolution.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 target_link_libraries(scene-resolution-test PRIVATE bbgpu)
+# bbport diagnostics: gcn-dis FILE... lists GCN programs dumped with BB_DUMP_SHADER_CODE.
+add_executable(gcn-dis EXCLUDE_FROM_ALL ../tests/gcn_dis.cpp ../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(gcn-dis PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(gcn-dis PRIVATE bbgpu)
 add_executable(deferred-pipeline-test EXCLUDE_FROM_ALL ../tests/test_deferred_pipeline.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(deferred-pipeline-test PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include)
 target_compile_options(deferred-pipeline-test PRIVATE -UNDEBUG -fPIC)

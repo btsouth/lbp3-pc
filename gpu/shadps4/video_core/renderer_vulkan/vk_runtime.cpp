@@ -14,6 +14,7 @@
 #include "video_core/texture_cache/image.h"
 
 #include <vulkan/vulkan_format_traits.hpp>
+#include <vk_mem_alloc.h>
 
 namespace Vulkan {
 
@@ -833,6 +834,71 @@ void Runtime::ClearVolumeSlices(VideoCore::Image* dst, const VideoCore::Subresou
 
     dst->flags |= VideoCore::ImageFlagBits::GpuModified;
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
+}
+
+u64 Runtime::DumpImage(VideoCore::Image* image, u32 layer, const std::string& path) {
+    const auto& info = image->info;
+    if (!image->backing || image->backing->num_samples != 1 ||
+        info.pixel_format == vk::Format::eUndefined) {
+        return 0;
+    }
+    const bool depth = static_cast<bool>(image->aspect_mask & vk::ImageAspectFlagBits::eDepth);
+    const vk::Format format = info.pixel_format;
+    u32 texel = 0;
+    if (depth) {
+        texel = format == vk::Format::eD16Unorm || format == vk::Format::eD16UnormS8Uint ? 2 : 4;
+    } else if (vk::blockExtent(format)[0] == 1) {
+        texel = vk::blockSize(format);
+    }
+    if (texel == 0) {
+        return 0; // compressed
+    }
+    const u32 width = info.size.width, height = info.size.height;
+    const u64 size = u64(width) * height * texel;
+    const VkBufferCreateInfo buffer_ci{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    };
+    const VmaAllocationCreateInfo alloc_ci{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+    };
+    VkBuffer buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo alloc_info{};
+    if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer, &allocation,
+                        &alloc_info) != VK_SUCCESS) {
+        return 0;
+    }
+    scheduler.EndRendering();
+    if (Transit(image, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eCopy,
+                vk::AccessFlagBits2::eTransferRead)) {
+        FlushBarriers();
+    }
+    const bool volume = info.props.is_volume;
+    const u32 slice = std::min(layer, (volume ? info.size.depth : info.resources.layers) - 1);
+    const vk::BufferImageCopy region{
+        .imageSubresource = {depth ? vk::ImageAspectFlagBits::eDepth
+                                   : vk::ImageAspectFlagBits::eColor,
+                             0, volume ? 0 : slice, 1},
+        .imageOffset = {0, 0, volume ? s32(slice) : 0},
+        .imageExtent = {width, height, 1},
+    };
+    scheduler.Record([src = image->GetImage(), dst = vk::Buffer{buffer},
+                      region](vk::CommandBuffer cmdbuf) {
+        cmdbuf.copyImageToBuffer(src, vk::ImageLayout::eTransferSrcOptimal, dst, region);
+    });
+    scheduler.DeferPriorityOperation(
+        [allocator = instance.GetAllocator(), buffer, allocation, alloc_info, size, path] {
+            vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+            if (FILE* f = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(alloc_info.pMappedData, 1, size, f);
+                std::fclose(f);
+            }
+            vmaDestroyBuffer(allocator, buffer, allocation);
+        });
+    return size;
 }
 
 void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool copy_backing) {
