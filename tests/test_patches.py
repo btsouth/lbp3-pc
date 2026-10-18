@@ -193,5 +193,70 @@ class IntelTonemapTests(unittest.TestCase):
         self.assertIn(patches.INTEL_TONEMAP, names)
 
 
+class RatchetClockTests(unittest.TestCase):
+    def executable(self):
+        # Two small PT_LOAD segments make virtual/file address translation explicit.
+        elf = bytearray(0x300)
+        struct.pack_into('<Q', elf, 0x20, 0x40)
+        struct.pack_into('<HH', elf, 0x36, 56, 2)
+        for index, (site, code) in enumerate((
+                (patches.RATCHET_INTERVAL_SITE, patches.RATCHET_INTERVAL_CODE),
+                (patches.RATCHET_CLOCK_SITE, patches.RATCHET_CLOCK_CODE))):
+            offset = 0x100 + index * 0x100
+            struct.pack_into('<IIQQQQQQ', elf, 0x40 + index * 56,
+                             1, 5, offset, site, site, len(code), len(code), 0x1000)
+            elf[offset:offset+len(code)] = code
+        return elf
+
+    def test_original_preset_is_untouched(self):
+        self.assertEqual(patches.ratchet_fps_writes('30', self.executable()), [])
+
+    def test_high_rates_patch_pacing_and_clock_together(self):
+        for fps in ('60', '90', '120', 'uncap'):
+            with self.subTest(fps=fps):
+                writes = dict(patches.ratchet_fps_writes(fps, self.executable()))
+                self.assertEqual(set(writes), {patches.RATCHET_INTERVAL_SITE,
+                                              patches.RATCHET_CLOCK_SITE})
+                self.assertEqual(writes[patches.RATCHET_CLOCK_SITE],
+                                 bytes.fromhex('c5f928c890909090'))
+
+    def test_either_changed_instruction_rejects_both_writes(self):
+        for offset in (0x100, 0x200):
+            with self.subTest(offset=offset):
+                elf = self.executable()
+                elf[offset] ^= 1
+                self.assertEqual(patches.ratchet_fps_writes('120', elf), [])
+
+    def test_pacing_follows_the_vblank_rate(self):
+        # The game's period is 1/59.94 s whatever the vblank: its own pacing only where flips land
+        # on ticks of the preset's rate, else the same interval plus the port's frame limit.
+        self.assertEqual(patches.ratchet_pacing('60', 60), (1.0, 0))
+        self.assertEqual(patches.ratchet_pacing('90', 90), (59.94/90, 0))
+        self.assertEqual(patches.ratchet_pacing('120', 120), (59.94/120, 0))
+        self.assertEqual(patches.ratchet_pacing('30', 60), (None, 0))
+        for hz in (0, 240, 480):
+            for fps in ('30', '60', '90', '120'):
+                with self.subTest(fps=fps, hz=hz):
+                    self.assertEqual(patches.ratchet_pacing(fps, hz), (patches.RATCHET_FPS[fps], int(fps)))
+            self.assertEqual(patches.ratchet_pacing('uncap', hz), (0.0, 0))
+        self.assertEqual(patches.ratchet_pacing('120', 60), (59.94/120, 120))
+
+    def test_interval_written_for_the_vblank_rate(self):
+        def interval(fps, hz):
+            code = dict(patches.ratchet_fps_writes(fps, self.executable(), hz))[
+                patches.RATCHET_INTERVAL_SITE]
+            return struct.unpack_from('<f', code, 4)[0]
+        self.assertEqual(interval('60', 60), 1.0)
+        self.assertEqual(interval('60', 240), 1.0)
+        self.assertAlmostEqual(interval('120', 240), 59.94/120, places=6)
+        self.assertEqual(patches.ratchet_fps_writes('30', self.executable(), 240), [])
+        self.assertEqual(patches.ratchet_fps_writes('30', self.executable(), 60), [])
+
+    def test_truncated_clock_segment_rejects_both_writes(self):
+        elf = self.executable()
+        struct.pack_into('<Q', elf, 0x40+56+32, len(patches.RATCHET_CLOCK_CODE)-1)
+        self.assertEqual(patches.ratchet_fps_writes('120', elf), [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -76,9 +76,11 @@ fi
 "$PYTHON" scripts/link_libc.py "$game" --out "$out"
 "$PYTHON" scripts/link_modules.py "$game" --out "$out"
 "$PYTHON" scripts/content_profile.py "$game" --out "$out" --sku "${BB_CONTENT_SKU:-full}"
-# LittleBigPlanet 3 (CUSA00063, the European release) gets its own defaults below.
+# Ratchet & Clank (2016; CUSA01073, the US CUSA01047 untested) and LittleBigPlanet 3
+# (CUSA00063, the European release) get their own defaults below.
 title=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sfo"].get("TITLE_ID", ""))' "$out/analysis.json" 2>/dev/null) || title=
-lbp3=0
+ratchet=0 lbp3=0
+[[ $title == CUSA01073 || $title == CUSA01047 ]] && ratchet=1
 [[ $title == CUSA00063 ]] && lbp3=1
 # LittleBigPlanet 3 needs these (each one set by hand wins):
 # - BB_IMAGE_BASE: the executable below 4 GiB, as the SPU job code keeps its globals in 32 bits;
@@ -96,9 +98,12 @@ if [[ ${BB_AUTO_RENDER_RES:-} == 1 ]]; then
 fi
 # BB_RENDER_RES=WxH explicitly sets the game's render resolution (a patch at start).
 # Frame rate: BB_FPS=uncap (default; delta-time patch, vblank 480 Hz, frames shown at once),
-# 60/90 (fixed-timestep patches) or 30 (unpatched). BB_PATCHES adds patch names ("a;b").
-# LittleBigPlanet 3 runs at 30, the rate it was made and tested for.
-if (( lbp3 )); then fps=${BB_FPS:-30}; else fps=${BB_FPS:-uncap}; fi
+# 60/90 (fixed-timestep patches) or 30 (unpatched); Ratchet & Clank also 120 (its frame pacing
+# interval, scripts/patches.py; its default is 60). LittleBigPlanet 3 runs at 30, the rate it
+# was made and tested for. BB_PATCHES adds patch names ("a;b").
+if (( ratchet )); then fps=${BB_FPS:-60}
+elif (( lbp3 )); then fps=${BB_FPS:-30}
+else fps=${BB_FPS:-uncap}; fi
 # bbport.ini output_res other than 1080p (720p for the Steam Deck, 1440p, 2160p): the whole game
 # renders at the preset's size of the output (a patch), the upscaler fills the output, the UI is
 # drawn at the output size. Preset and output changes need a restart.
@@ -111,7 +116,8 @@ if (( lbp3 )); then fps=${BB_FPS:-30}; else fps=${BB_FPS:-uncap}; fi
 if [[ -n ${BB_PROBE:-} ]]; then caps=$(dirname -- "$BB_PROBE")/bb-gpu-capabilities
 elif [[ -n ${BB_PREBUILT:-} ]]; then caps=bin/bb-gpu-capabilities
 else caps=out/bb-gpu-capabilities; fi
-if [[ -z ${BB_RENDER_RES:-} ]]; then
+# Ratchet & Clank always renders 1920x1080 (the output_res patches are Bloodborne's).
+if [[ -z ${BB_RENDER_RES:-} ]] && (( ! ratchet )); then
     read -r scaled_render scaled_output < <("$PYTHON" scripts/patches.py --print-scaled --settings "$BB_CONFIG") || true
 fi
 live=0
@@ -136,7 +142,29 @@ elif [[ -n ${scaled_output:-} ]]; then
     export BB_DMEM_MB=${BB_DMEM_MB:-9152}
     echo "Output ${scaled_output}: scene ${scaled_render}, direct memory ${BB_DMEM_MB} MiB (live_resolution=1: live changes)"
 fi
-"$PYTHON" scripts/patches.py --out "$out" --fps "$fps" --extra "${BB_PATCHES:-}" --settings "$BB_CONFIG" --game-dir "$game" --render-res "${BB_RENDER_RES:-}" --output-res "${BB_OUTPUT_RES:-}" \
+if [[ -z ${BB_VBLANK_HZ:-} ]]; then
+    # Ratchet stalls with 480 Hz vblank; 240 Hz keeps immediate flips and works with its pacing.
+    # Keep Bloodborne's existing default. BB_VBLANK_HZ remains an explicit override.
+    rac_hz=480
+    (( ratchet )) && rac_hz=240
+    case $fps in uncap|120) export BB_VBLANK_HZ=$rac_hz ;; 90) export BB_VBLANK_HZ=90 ;; *) export BB_VBLANK_HZ=60 ;; esac
+fi
+# Ratchet & Clank renders at 1920x1080 (its targets sit at fixed addresses; no resolution patch):
+# on a larger screen the presenter scales the finished frame with FSR 1 (edge-adaptive upscale
+# and sharpening) instead of a bilinear stretch. BB_FSR1=0: bilinear.
+if [[ -z ${BB_FSR1:-} ]] && (( ratchet )); then
+    export BB_FSR1=1
+fi
+# Ratchet & Clank paces itself for flips on vblank ticks of the preset's rate (60 at 60 Hz); at
+# any other rate (240 Hz: flips at once) the preset is paced by the port's limiter instead.
+if [[ -z ${BB_FPS_LIMIT:-} ]]; then
+    limit=$("$PYTHON" scripts/patches.py --out "$out" --fps "$fps" --vblank-hz "$BB_VBLANK_HZ" --print-frame-limit) || limit=0
+    if [[ -n $limit && $limit != 0 ]]; then
+        export BB_FPS_LIMIT=$limit
+        echo "Frame rate $fps at vblank $BB_VBLANK_HZ Hz: paced by the frame limit (BB_FPS_LIMIT=$limit)"
+    fi
+fi
+"$PYTHON" scripts/patches.py --out "$out" --fps "$fps" --vblank-hz "$BB_VBLANK_HZ" --extra "${BB_PATCHES:-}" --settings "$BB_CONFIG" --game-dir "$game" --render-res "${BB_RENDER_RES:-}" --output-res "${BB_OUTPUT_RES:-}" \
     --patches-dir "${BB_PATCHES_DIR:-$data/patches}" --patches-config "${BB_PATCHES_CONFIG:-$data/patches.json}"
 # Background upload of the game's GPU memory into VRAM ahead of use (BufferCache::Preupload):
 # 1 = only memory already in VRAM that the game rewrote (no new VRAM), 2 = all of it (~3 GB more
@@ -155,6 +183,24 @@ export BB_PREUPLOAD=${BB_PREUPLOAD:-1}
 # BB_AS_0_3=1 (the launcher's developer switch "Synchronisation as in 0.3"): what changed since the
 # 0.3 release is reverted for comparisons: the 0.3 memory model, WRITE_DATA/DMA waiting for every
 # host copy, the scheduler's concurrent recording check.
+# Ratchet & Clank needs these (each one set by hand wins):
+# - BB_HINTLESS_BASE: libc's heap away from 0x1000000000, where the game puts its main heap;
+# - BB_STUB_IMPORTS: system functions the runtime lacks return 0 instead of stopping the game;
+# - BB_CREATE_YIELD_*: a new thread runs before its creator goes on, as on the PS4 (otherwise
+#   renderer start races the Render Thread and the game exits);
+# - BB_READBACK_LINEAR(_ASYNC): the occlusion buffer the CPU reads is a linear image, downloaded
+#   every frame without waiting for the GPU at each fence;
+# - BB_GAME_AA: DLSS or FSR 3.1 in place of the game's TAA (upscaler below);
+# - BB_PC_MODEL=0: the memory model it was tested with, on every GPU.
+# The CPU's missing SSE4a instructions are emulated automatically (src/runtime_sse4a.c).
+if (( ratchet )); then
+    export BB_HINTLESS_BASE=${BB_HINTLESS_BASE:-0x7000000000}
+    export BB_STUB_IMPORTS=${BB_STUB_IMPORTS:-1}
+    export BB_CREATE_YIELD_US=${BB_CREATE_YIELD_US:-2000} BB_CREATE_YIELD_ALL=${BB_CREATE_YIELD_ALL:-1}
+    export BB_READBACK_LINEAR=${BB_READBACK_LINEAR:-1} BB_READBACK_LINEAR_ASYNC=${BB_READBACK_LINEAR_ASYNC:-1}
+    export BB_GAME_AA=${BB_GAME_AA:-1}
+    export BB_PC_MODEL=${BB_PC_MODEL:-0}
+fi
 # The game's GPU (vendor ID and name), for the choices below that depend on it.
 gpu_vendor= gpu_name=
 if [[ -z ${BB_PC_MODEL:-} || ( ${BB_AUTO_NOHIZ:-1} != 0 && -z ${RADV_DEBUG:-} ) ]]; then
@@ -182,6 +228,23 @@ if [[ ${BB_AUTO_NOHIZ:-1} != 0 && -z ${RADV_DEBUG:-} && $gpu_name == *"(RADV "* 
             break
         fi
     done
+fi
+# Ratchet & Clank's upscaler when bbport.ini names none (the launcher's "Auto"): DLSS on NVIDIA
+# (FSR 3.1 when its libraries are missing), FSR 3.1 elsewhere.
+if (( ratchet )) && [[ -z ${BB_UPSCALER:-} ]]; then
+    chosen=
+    if [[ -f $BB_CONFIG ]]; then
+        while IFS= read -r line || [[ -n $line ]]; do
+            [[ $line =~ ^upscaler=(.+)$ ]] && chosen=${BASH_REMATCH[1]}
+        done < "$BB_CONFIG"
+    fi
+    if [[ -z $chosen ]]; then
+        if [[ -z $gpu_vendor ]]; then
+            IFS=$'\t' read -r gpu_vendor gpu_name < <("$caps" --device 2> /dev/null) || true
+        fi
+        if [[ $gpu_vendor == 0x10de ]]; then export BB_UPSCALER=dlss; else export BB_UPSCALER=fsr3; fi
+        echo "Upscaler: $BB_UPSCALER in place of the game's TAA (${gpu_name:-GPU unknown}; bbport.ini upscaler=: another)"
+    fi
 fi
 if [[ ${BB_AS_0_3:-0} == 1 ]]; then
     export BB_GUEST_IN_PLACE=0 BB_HOST_COPY_WAITS=all BB_PRODUCER_CHECK=1
@@ -215,9 +278,6 @@ export BB_COPY_GPU_BUFFERS=${BB_COPY_GPU_BUFFERS:-1}
 # A guest write next to small GPU outputs the GPU is still writing (counters, compute results,
 # up to BB_GPU_WRITE_TWINS_MAX bytes per page) does not wait for the GPU (BufferCache twins).
 export BB_GPU_WRITE_TWINS=${BB_GPU_WRITE_TWINS:-1} BB_GPU_WRITE_TWINS_MAX=${BB_GPU_WRITE_TWINS_MAX:-65536}
-if [[ -z ${BB_VBLANK_HZ:-} ]]; then
-    case $fps in uncap) export BB_VBLANK_HZ=480 ;; 90) export BB_VBLANK_HZ=90 ;; *) export BB_VBLANK_HZ=60 ;; esac
-fi
 # FSR 4: faster post passes next to the downloaded ones (incremental; tools/fsr4_optimize.sh).
 if [[ -z ${BB_PREBUILT:-} && -d fsr4_shaders ]] && command -v spirv-cross >/dev/null; then
     bash tools/fsr4_optimize.sh || echo 'FSR 4: optimized post passes not built' >&2

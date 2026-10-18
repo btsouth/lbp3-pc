@@ -675,6 +675,18 @@ void RunEventWriteEos(Vulkan::Rasterizer& rasterizer, const u8* data) {
                                   reinterpret_cast<VAddr>(eos.Address()), eos.DataDWord());
         return;
     }
+    // bbport: as an end-of-pipe fence (RunEventWriteEop), the draw recording thread does not
+    // wait: the Vulkan recording thread writes the label after the copies queued before it.
+    // Ratchet & Clank ends ~300 shader passes a second with one; the waits were ~12% of this
+    // thread. Experiment bit 4: the waits, as before (A/B).
+    if (event_eos.command == PM4CmdEventWriteEos::Command::SignalFence &&
+        Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences) &&
+        !BbToggle::Experiment(4)) {
+        rasterizer.ProcessDownloadImages();
+        const PM4CmdEventWriteEos eos = event_eos;
+        rasterizer.SignalAfterHostCopies([eos] { eos.SignalFence(&WriteEosLabel); });
+        return;
+    }
     // Copies deferred to the recording thread precede writes the guest sees.
     rasterizer.WaitHostCopies();
     rasterizer.WaitDeferredSignals();
@@ -2210,6 +2222,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     YIELD_GFX();
                 }
                 g_gfx_wait.End();
+                // bbport: the guest may have written memory for the draws after this wait
+                // (BB_HOT_PAGES: hot pages count as modified again).
+                BbStats::upload_epoch.fetch_add(1, std::memory_order_relaxed);
                 if (dcb_stats) {
                     ++g_dcb_stats.wait_outcome[met ? 2 : 3];
                     g_dcb_stats.wait_ms += std::chrono::duration<double, std::milli>(
@@ -2615,6 +2630,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 YIELD_ASC(vqid);
             }
             g_asc_wait.End();
+            BbStats::upload_epoch.fetch_add(1, std::memory_order_relaxed); // as on the gfx queue
             break;
         }
         case PM4ItOpcode::ReleaseMem: {

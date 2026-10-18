@@ -42,6 +42,7 @@ extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
 namespace Vulkan {
 extern std::atomic<u64> g_bb_compile_ns;
 extern std::atomic<u32> g_bb_compiles;
+extern std::atomic<u64> g_bb_compile_stall_ns;
 } // namespace Vulkan
 
 namespace Libraries::VideoOut {
@@ -395,6 +396,19 @@ void VideoOutDriver::Flip(const Request& req) {
         const auto now = Clock::now();
         const double frame_ms = std::chrono::duration<double, std::milli>(now - last).count();
         worst_ms = std::max(worst_ms, frame_ms);
+        // Frames during which the GPU thread or a recorder waited for a compile (over 1 ms).
+        static u64 last_stall_ns;
+        static u32 compile_wait_frames;
+        static double worst_compile_wait_ms;
+        {
+            const u64 stall_ns = Vulkan::g_bb_compile_stall_ns.load(std::memory_order_relaxed);
+            const double waited_ms = (stall_ns - last_stall_ns) / 1e6;
+            last_stall_ns = stall_ns;
+            if (waited_ms > 1.0) {
+                ++compile_wait_frames;
+                worst_compile_wait_ms = std::max(worst_compile_wait_ms, waited_ms);
+            }
+        }
         static std::vector<double> intervals;
         intervals.push_back(frame_ms);
         last = now;
@@ -602,13 +616,15 @@ void VideoOutDriver::Flip(const Request& req) {
             window_draws = all_draws;
             window_gpu_us = gpu_us;
             std::printf("Frame stats: %.1f FPS, worst frame %.1f ms (vblank %u Hz); "
-                        "%u shader/pipeline compiles, %.1f ms; %llu recorder syncs; "
+                        "%u shader/pipeline compiles, %.1f ms, %u frames waited for one "
+                        "(worst %.1f ms); %llu recorder syncs; "
                         "%.0f write faults/s, %lld hot pages; GPU thread %.2f us/draw, "
                         "%.0f draws/frame, idle %.1f%%; blocked: recorder %.1f%%, host copies "
                         "%.1f%% (%.0f/frame, %.0f/frame not needed), copy threads %.1f%%, GPU ticks %.1f%%; "
                         "reduced-size draws %.0f/frame of %.0f in the scene\n",
                         frames / window, worst_ms, EmulatorSettings.GetVblankFrequency(), compiles,
-                        compile_ns / 1e6, static_cast<unsigned long long>(direct),
+                        compile_ns / 1e6, compile_wait_frames, worst_compile_wait_ms,
+                        static_cast<unsigned long long>(direct),
                         faults / window, static_cast<long long>(BbStats::hot_pages.load()),
                         us_per_draw, draws_per_frame,
                         BbStats::gpu_idle_ns.exchange(0) / (window * 1e7),
@@ -727,6 +743,8 @@ void VideoOutDriver::Flip(const Request& req) {
             window_start = now;
             frames = 0;
             worst_ms = 0;
+            compile_wait_frames = 0;
+            worst_compile_wait_ms = 0;
         }
     }
 

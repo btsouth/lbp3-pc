@@ -4,7 +4,8 @@
 
 /* The settings menu of the GPU library restarts through probe.c, which tests do not link. */
 void runtime_restart(void) { abort(); }
-void runtime_guest_frames(uintptr_t a,uintptr_t b) { (void)a; (void)b; abort(); }
+/* Guest frame chain printing on a fault lives in probe.c too. */
+void runtime_guest_frames(uintptr_t rbp, uintptr_t rsp) { (void)rbp; (void)rsp; }
 #include <assert.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -180,6 +181,14 @@ static void wall_time(void) {
     GetTime libc_get=(GetTime)runtime_resolve("n88vx3C5nW8#q#q",0);
     assert(libc_get && libc_get(t.value,z.value)==0);
     assert(t.value[0]>=before && t.value[1]>=0 && t.value[1]<1000000);
+}
+static void live_streaming(void) {
+    typedef int32_t (ABI *Enable)(int32_t);
+    typedef int32_t (ABI *Init)(uint64_t);
+    /* Ratchet & Clank: Initialize at boot, EnableLiveStreaming(false) in cutscene levels. */
+    assert(GET(Init,"kvYEw2lBndk#e#f")(0x4000)==0);
+    Enable enable=GET(Enable,"dWM80AX39o4#e#f");
+    assert(enable && enable(0)==0 && enable(1)==0);
 }
 static void direct_memory(void) {
     Allocate alloc=GET(Allocate,"rTXw65xmLIA#p#J");
@@ -421,7 +430,7 @@ int main(int argc,char **argv) {
     if (argc>1 && !strcmp(argv[1],"--rwlock-lifecycle")) { rw_lifecycle(); return 0; }
     if (argc>1 && !strcmp(argv[1],"--rwlock-concurrency")) { rw_concurrency(); return 0; }
     if (argc>1 && !strcmp(argv[1],"--rwlock-timeouts")) { rw_timeouts(); return 0; }
-    libc_support(); posix_mutexes(); wall_time(); exit_handlers(); guards(); mutexes(); direct_memory(); write_traps(); memory_primitives();
+    libc_support(); posix_mutexes(); wall_time(); exit_handlers(); guards(); mutexes(); direct_memory(); write_traps(); memory_primitives(); live_streaming();
     rw_lifecycle(); rw_concurrency(); rw_timeouts();
     puts("PASS: callback lifecycle, guard ABI, mutex errors, shared direct memory, memory primitives, resolver scope");
     return 0;

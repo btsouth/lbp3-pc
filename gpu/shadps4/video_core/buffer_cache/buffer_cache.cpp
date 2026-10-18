@@ -14,6 +14,7 @@
 #include "bbport_sections.h"
 #include "bbport_free_check.h"
 #include "bbport_guest_memory.h"
+#include "video_core/buffer_cache/preupload_ranges.h"
 #include "game_profile.h"
 #include "bblayer_gpu_memory.h"
 #include "bblayer_write_traps.h"
@@ -578,7 +579,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         game->install_hooks(Game::CoreServices{
             .fresh_range = [](u64 address, u64 size) { hooked_cache->NoteFreshRange(address, size); },
         });
-    } else if (GuestInPlace() && game) {
+    } else if (GuestInPlace() && game && game->install_hooks) {
         std::printf("Guest hooks: off (BB_GUEST_HOOKS=0): nothing in the game's own code is hooked\n");
     }
     if (LayerMode()) {
@@ -3433,28 +3434,7 @@ void BufferCache::NotePreuploadMapping(VAddr addr, u64 size, bool mapped) {
         }
     }
     std::scoped_lock lk{preupload_mutex};
-    const VAddr end = addr + size;
-    // Remove what overlaps [addr, end), keeping the parts outside it.
-    for (auto it = preupload_ranges.lower_bound(addr) == preupload_ranges.begin()
-                       ? preupload_ranges.begin()
-                       : std::prev(preupload_ranges.lower_bound(addr));
-         it != preupload_ranges.end() && it->first < end;) {
-        const VAddr start = it->first, stop = it->second;
-        if (stop <= addr) {
-            ++it;
-            continue;
-        }
-        it = preupload_ranges.erase(it);
-        if (start < addr) {
-            preupload_ranges[start] = addr;
-        }
-        if (stop > end) {
-            preupload_ranges[end] = stop;
-        }
-    }
-    if (mapped) {
-        preupload_ranges[addr] = end;
-    }
+    PreuploadNoteRange(preupload_ranges, addr, addr + size, mapped);
 }
 
 void BufferCache::DropTwins(VAddr addr, u64 size) {
@@ -3485,10 +3465,14 @@ void BufferCache::Preupload(u64 budget) {
     constexpr u32 QuietFrames = 10;
     // Regions looked at per call (CPU time bound): 256 x 4 MiB.
     constexpr u32 MaxRegions = 256;
+    // Start at the range holding the cursor (or the next one), wrap around once. Only the ranges
+    // the walk can reach are taken: copying the whole map every frame was ~6% of the draw
+    // recording thread in Ratchet & Clank (thousands of mappings).
     std::vector<std::pair<VAddr, VAddr>> ranges;
     {
         std::scoped_lock lk{preupload_mutex};
-        ranges.assign(preupload_ranges.begin(), preupload_ranges.end());
+        ranges = PreuploadWalk(preupload_ranges, preupload_cursor, MaxRegions,
+                               TRACKER_HIGHER_PAGE_BITS);
     }
     if (ranges.empty()) {
         return;
@@ -3496,17 +3480,9 @@ void BufferCache::Preupload(u64 budget) {
     const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
     const u32 quiet_since = frame > QuietFrames ? frame - QuietFrames : 0;
     const u64 uploaded_before = BbStats::buffer_upload_bytes.load(std::memory_order_relaxed);
-    // Start at the range holding the cursor (or the next one), wrap around once.
-    std::size_t first = 0;
-    while (first < ranges.size() && ranges[first].second <= preupload_cursor) {
-        ++first;
-    }
-    if (first == ranges.size()) {
-        first = 0;
-    }
     u32 visited = 0;
     for (std::size_t n = 0; n < ranges.size() && visited < MaxRegions; ++n) {
-        const auto [start, end] = ranges[(first + n) % ranges.size()];
+        const auto [start, end] = ranges[n];
         VAddr at = n == 0 ? std::max(start, preupload_cursor) : start;
         if (at >= end) {
             at = start;

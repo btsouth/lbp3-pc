@@ -14,6 +14,7 @@
 
 #include <SDL3/SDL.h>
 #include "bbport_settings.h"
+#include "game_profile.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -527,6 +528,12 @@ void Menu() {
         s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
         s.live_resolution != s.startup_live_resolution || BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
+        // A game whose motion blur pass the translator knows (games/: Ratchet) leaves it out
+        // while it runs.
+        if (std::string_view(BbSettings::Effects[e].key) == "effect_motion_blur" &&
+            Game::MotionBlurShader()) {
+            continue;
+        }
         restart |= s.effects[e] != s.startup_effects[e];
     }
     if (restart) {

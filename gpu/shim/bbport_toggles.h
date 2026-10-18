@@ -129,6 +129,9 @@ inline std::atomic<std::uint64_t> asc_submits{0};
 /// The game's GPU range allocators (seen at their collector, 0x26aa860): object, live ranges, bytes.
 inline std::array<std::atomic<std::uint64_t>, 4> range_allocators{}, range_live{}, range_bytes{};
 inline std::atomic<std::int64_t> hot_pages{0};
+/// Guest submissions the GPU thread has finished (Rasterizer::OnSubmit): hot pages are uploaded
+/// once per submission they are used in (RegionManager::RefreshHotPages).
+inline std::atomic<std::uint64_t> upload_epoch{1};
 /// Stall diagnostics (BB_FRAME_STATS): per-frame deltas printed for frames over 40 ms.
 inline std::atomic<std::uint64_t> images_registered{0};
 inline std::atomic<std::uint64_t> image_upload_bytes{0};

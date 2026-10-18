@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include <set>
+#include <string>
+#include <tuple>
 #include "common/logging/log.h"
 #include "shader_recompiler/resource.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -47,8 +53,30 @@ bool IsViewTypeCompatible(AmdGpu::ImageType view_type, AmdGpu::ImageType image_t
     }
 }
 
+
+// bbport BB_LOG_FORMATS=1 (diagnostics): each distinct use of the 11/11/10-bit float formats and
+// each color target with a component swap, with the raw format and swizzle (first 200).
+static void LogFormatUse(const char* kind, u64 address, u32 raw_format, u32 sel) {
+    static const bool enabled = std::getenv("BB_LOG_FORMATS") != nullptr;
+    if (!enabled) {
+        return;
+    }
+    static std::mutex lock;
+    static std::set<std::tuple<std::string, u64, u32, u32>> seen;
+    std::scoped_lock lk{lock};
+    if (seen.size() < 200 && seen.emplace(kind, address, raw_format, sel).second) {
+        std::printf("Format use: %s %#llx data format %u sel %#x\n", kind,
+                    (unsigned long long)address, raw_format, sel);
+    }
+}
+
 ImageViewInfo::ImageViewInfo(const AmdGpu::Image& image, const Shader::ImageResource& desc) noexcept
     : is_storage{desc.is_written} {
+    if (image.data_format == 6 || image.data_format == 7) {
+        LogFormatUse(desc.is_written ? "storage" : "texture", image.Address(), image.data_format,
+                     image.dst_sel_x | image.dst_sel_y << 3 | image.dst_sel_z << 6 |
+                         image.dst_sel_w << 9);
+    }
     const auto dfmt = image.GetDataFmt();
     auto nfmt = image.GetNumberFmt();
     if (is_storage && nfmt == AmdGpu::NumberFormat::Srgb) {
@@ -72,6 +100,10 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::Image& image, const Shader::ImageReso
 }
 
 ImageViewInfo::ImageViewInfo(const AmdGpu::ColorBuffer& col_buffer) noexcept {
+    if (const u32 raw = u32(col_buffer.info.format); raw == 6 || raw == 7 ||
+                                                     u32(col_buffer.info.comp_swap) != 0) {
+        LogFormatUse("target", col_buffer.Address(), raw, u32(col_buffer.info.comp_swap));
+    }
     range.base.layer = col_buffer.BaseSlice();
     range.extent.layers = col_buffer.NumSlices() - range.base.layer;
     type = range.extent.layers > 1 ? AmdGpu::ImageType::Color2DArray : AmdGpu::ImageType::Color2D;

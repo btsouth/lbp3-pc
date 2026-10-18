@@ -19,6 +19,11 @@ struct PushData;
 
 namespace Vulkan {
 
+/// bbport: time a thread that makes the game's frames waited for a shader or pipeline compile
+/// (on the GPU thread, or a recorder waiting for a pipeline built on a worker); never reset.
+extern std::atomic<u64> g_bb_compile_stall_ns;
+
+
 static constexpr auto AllGraphicsStageBits =
     vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eTessellationControl |
     vk::ShaderStageFlagBits::eTessellationEvaluation | vk::ShaderStageFlagBits::eGeometry |

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "bbport_acquire_slots.h"
 #include <mutex>
 #include <vector>
 #include "common/types.h"
@@ -75,12 +76,31 @@ public:
         return frame_index;
     }
 
+    /// bbport: the GPU stall report.
+    vk::PresentModeKHR GetPresentMode() const {
+        return present_mode;
+    }
+
+    u32 GetImageIndex() const {
+        return image_index;
+    }
+
     vk::Extent2D GetExtent() const {
         return extent;
     }
 
     [[nodiscard]] vk::Semaphore GetImageAcquiredSemaphore() const {
         return image_acquired[frame_index];
+    }
+
+    /// bbport: the present scheduler tick to wait for before the next acquire (see AcquireSlots).
+    u64 PendingAcquireWait() const {
+        return acquire_slots.Pending(frame_index);
+    }
+
+    /// bbport: the present scheduler's submission with `tick` waits for this acquire.
+    void NoteAcquireWait(u64 tick) {
+        acquire_slots.Note(frame_index, tick);
     }
 
     [[nodiscard]] vk::Semaphore GetPresentReadySemaphore() const {
@@ -131,6 +151,7 @@ private:
     std::vector<vk::ImageView> images_view;
     std::vector<vk::Semaphore> image_acquired;
     std::vector<vk::Semaphore> present_ready;
+    BbPresent::AcquireSlots acquire_slots; ///< bbport: per acquire semaphore, the submission waiting
     u32 width = 0;
     u32 height = 0;
     u32 image_count = 0;

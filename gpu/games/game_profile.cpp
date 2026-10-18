@@ -12,9 +12,10 @@ namespace Game {
 
 // One per game (games/<game>.cpp).
 extern const Profile BloodborneProfile;
+extern const Profile RatchetProfile;
 
 namespace {
-constexpr std::array<const Profile*, 1> Profiles = {&BloodborneProfile};
+constexpr std::array<const Profile*, 2> Profiles = {&BloodborneProfile, &RatchetProfile};
 std::atomic<const Profile*> active{nullptr};
 } // namespace
 
@@ -45,6 +46,18 @@ bool IsDynamicWriter(std::uint64_t guest_rip) {
     const Profile* profile = Active();
     return profile && std::ranges::any_of(profile->dynamic_writers, [&](const CodeRange& r) {
                return guest_rip >= r.begin && guest_rip < r.end;
+           });
+}
+
+bool HasStreamedMemory() {
+    const Profile* profile = Active();
+    return profile && !profile->streamed_memory.empty();
+}
+
+bool InStreamedMemory(std::uint64_t address) {
+    const Profile* profile = Active();
+    return profile && std::ranges::any_of(profile->streamed_memory, [&](const CodeRange& r) {
+               return address >= r.begin && address < r.end;
            });
 }
 

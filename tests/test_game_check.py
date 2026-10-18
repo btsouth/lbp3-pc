@@ -134,5 +134,40 @@ class GameCheckTests(unittest.TestCase):
             self.assertIn('CUSA', game_check.explain(kind, 'CUSA03173', '01.00'))
 
 
+class RatchetGameCheckTests(GameCheckTests.__base__):
+    """Ratchet & Clank: CUSA01073 1.00 runs; the US release and other executables warn; other
+    versions stop."""
+    game = GameCheckTests.game
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ.pop('BB_SKIP_GAME_CHECK', None)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_supported_executable(self):
+        game = self.game('CUSA01073', '01.00')
+        with mock.patch.object(game_check, 'RATCHET_IMAGE', game_check.image_sha256(game)):
+            self.assertIsNone(game_check.problem(game))
+
+    def test_other_version_stops(self):
+        self.assertEqual(game_check.problem(self.game('CUSA01073', '01.09'))[0], 'ratchet_version')
+        self.assertNotIn('ratchet_version', game_check.WARNINGS)
+
+    def test_us_release_and_other_executables_warn(self):
+        self.assertEqual(game_check.problem(self.game('CUSA01047', '01.00'))[0], 'ratchet_untested')
+        self.assertEqual(game_check.problem(self.game('CUSA01073', '01.00'))[0], 'ratchet_image')
+        for kind in ('ratchet_untested', 'ratchet_image'):
+            self.assertIn(kind, game_check.WARNINGS)
+            self.assertIn('CUSA01073', game_check.explain(kind, 'CUSA01047', '01.00'))
+
+    def test_unreadable(self):
+        self.assertEqual(game_check.problem(self.game('CUSA01073', '01.00', b'junk'))[0], 'unreadable')
+
+    def test_bloodborne_titles_unchanged(self):
+        self.assertEqual(game_check.problem(self.game('CUSA03173', '01.00'))[0], 'missing_update')
+
+
 if __name__ == '__main__':
     unittest.main()

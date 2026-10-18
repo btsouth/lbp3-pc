@@ -25,6 +25,9 @@
 #include "video_core/host_shaders/fsr4_decode_comp.h"
 #include "video_core/host_shaders/fsr4_encode_comp.h"
 #include "video_core/host_shaders/fsr4_reactive_comp.h"
+#include "video_core/host_shaders/game_aa_prep_comp.h"
+#include "video_core/host_shaders/game_aa_store_comp.h"
+#include "game_profile.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
@@ -190,6 +193,14 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     // Available unless BB_UPSCALER=none; on/off and the parameters are the menu's settings.
     const char* env = std::getenv("BB_UPSCALER");
     enabled = !(env && std::strcmp(env, "none") == 0);
+    // bbport BB_GAME_AA=1: DLSS or FSR 3 in place of the game's own TAA (games/: Ratchet).
+    game_aa = Game::ActiveSceneAa();
+    if (const char* on = std::getenv("BB_GAME_AA"); game_aa && on && on[0] == '1') {
+        game_aa_on = true;
+        std::printf("Upscaler: stands in for the game's TAA (compute %016llx), DLSS or FSR 3.1 "
+                    "by the menu's upscaler\n",
+                    (unsigned long long)game_aa->taa_shader);
+    }
     if (const char* hash = std::getenv("BB_UPSCALE_BEFORE_CS")) {
         trigger_hash = std::strtoull(hash, nullptr, 16);
     }
@@ -374,21 +385,29 @@ bool TemporalUpscaler::OnFrameStart() {
     // Dynamic scene resolution scaling (live preset switching) works on all GPUs.
     // On GPUs without D32S8 blit support, UI depth is cleared instead of copied from scene.
     if (!scaled_session) {
-        scene_targets.SetSize(SceneResolution::ForPreset(active ? preset : 0,
+        // The game TAA stand-in runs at the game's render size: no reduced scene proxies.
+        scene_targets.SetSize(SceneResolution::ForPreset(active && !game_aa_on ? preset : 0,
                                                         {target_width, target_height}));
         render_width = scene_targets.Size().width;
         render_height = scene_targets.Size().height;
     }
     BbSettings::Get().active_render_width = Scaled() ? render_width : scene_targets.Size().width;
     BbSettings::Get().active_render_height = Scaled() ? render_height : scene_targets.Size().height;
-    if (changed || !dispatched_last_frame) reset = true;
+    // A frame may pass the display buffer more than once (Ratchet & Clank: twice): the history
+    // resets when a whole shown frame went by without the upscaler, not at every pass.
+    const u32 shown = BbStats::frame_number.load(std::memory_order_relaxed);
+    const bool new_frame = shown != checked_frame;
+    if (changed || (new_frame && !dispatched_last_frame)) reset = true;
     if (changed) jitter_index = 0;
     applied_preset = preset;
     applied_output = output;
     applied_upscaler = upscaler;
     last_active = active;
     last_jitter = jitter_on;
-    dispatched_last_frame = false;
+    if (new_frame) {
+        dispatched_last_frame = false;
+        checked_frame = shown;
+    }
 
     // Diagnostics BB_UI_TRACE=1: the draws of frames that ended without the output-size UI
     // (their display buffer is shown as the game drew it, at its own size), and of one that had it.
@@ -405,6 +424,7 @@ bool TemporalUpscaler::OnFrameStart() {
     // The display pass of an upscaled frame reads the upscaled UI image.
     display_redirect = ui_phase;
     ui_phase = false;
+    game_aa_ready = false;
     ui_read_barrier = false;
     done_this_frame = false;
     ldr_target = {};
@@ -426,16 +446,343 @@ bool TemporalUpscaler::OnFrameStart() {
     return changed;
 }
 
-void TemporalUpscaler::OnDispatch(u64 cs_hash) {
+bool TemporalUpscaler::OnDispatch(u64 cs_hash, std::span<const u32> constants) {
+    if (game_aa_on) {
+        if (cs_hash == game_aa->taa_shader) {
+            RunGameAa(constants);
+        } else if (cs_hash == game_aa->copy_shader && game_aa_ready) {
+            return StoreGameAa();
+        }
+        return false;
+    }
     if (cs_hash != trigger_hash || done_this_frame || failed || Scaled()) {
-        return;
+        return false;
     }
     done_this_frame = true;
     if (!scene_color || !camera_motion.Ready() || !Active()) {
         reset = true;
-        return;
+        return false;
     }
     Run();
+    return false;
+}
+
+u64 TemporalUpscaler::GameAaShader() const noexcept {
+    return game_aa_on ? game_aa->taa_shader : 0;
+}
+
+bool TemporalUpscaler::GameAaActive() const {
+    // DLSS or FSR 3.1 from the menu; the other choices (FSR 4, the port's TAA, off) and toggle
+    // 1 << 24 leave the game's own TAA.
+    const int upscaler = BbSettings::Get().upscaler;
+    return game_aa_on && enabled && !failed && !BbToggle::Disabled(1u << 24) &&
+           (upscaler == BbSettings::UpscalerFsr3 || upscaler == BbSettings::UpscalerDlss);
+}
+
+VideoCore::Image* TemporalUpscaler::GuestImage(u64 address, vk::Format format, u32 width,
+                                               u32 height) {
+    VideoCore::Image* found = nullptr;
+    texture_cache.ForEachImageInRegion(address, 1, [&](VideoCore::ImageId, VideoCore::Image& image) {
+        if (image.info.guest_address == address && image.info.pixel_format == format &&
+            (!width || image.info.size.width == width) &&
+            (!height || image.info.size.height == height)) {
+            found = &image;
+        }
+    });
+    return found;
+}
+
+void TemporalUpscaler::RunGameAa(std::span<const u32> constants) {
+    if (!GameAaActive()) {
+        reset = true;
+        return;
+    }
+    // The game's own images at its render size, by address and format. Missing ones (a frame
+    // without the scene: menus, loading) leave the game's TAA.
+    auto* color = GuestImage(game_aa->color, vk::Format::eB10G11R11UfloatPack32);
+    if (!color) {
+        reset = true;
+        return;
+    }
+    const u32 w = color->info.size.width, h = color->info.size.height;
+    auto* motion = GuestImage(game_aa->motion, vk::Format::eR16G16Sfloat, w, h);
+    auto* linear = GuestImage(game_aa->linear_depth, vk::Format::eR32Sfloat, w, h);
+    const u32 jitter_end = (game_aa->jitter_dword + 2) * sizeof(u32);
+    if (!motion || !linear || constants.size_bytes() < jitter_end ||
+        !(color->usage_flags & vk::ImageUsageFlagBits::eStorage)) {
+        static bool printed = false;
+        if (!printed) {
+            printed = true;
+            std::printf("Upscaler: game TAA inputs missing (motion %d, depth %d, constants %zu "
+                        "bytes, scene color storage %d); the game's TAA stays\n",
+                        motion != nullptr, linear != nullptr, constants.size_bytes(),
+                        bool(color->usage_flags & vk::ImageUsageFlagBits::eStorage));
+        }
+        reset = true;
+        return;
+    }
+    if (!EnsureResources(w, h, w, h, true)) {
+        failed = true;
+        return;
+    }
+    if (game_aa_width != w || game_aa_height != h || !game_aa_depth_view) {
+        scheduler.Finish();
+        game_aa_depth_view.reset();
+        game_aa_depth = VideoCore::UniqueImage(instance.GetDevice(), instance.GetAllocator());
+        game_aa_depth.Create(vk::ImageCreateInfo{
+            .imageType = vk::ImageType::e2D,
+            .format = vk::Format::eR32Sfloat,
+            .extent = {w, h, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .tiling = vk::ImageTiling::eOptimal,
+            .usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled,
+            .initialLayout = vk::ImageLayout::eUndefined,
+        });
+        game_aa_depth_view = Check(instance.GetDevice().createImageViewUnique({
+            .image = vk::Image(game_aa_depth),
+            .viewType = vk::ImageViewType::e2D,
+            .format = vk::Format::eR32Sfloat,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        }));
+        game_aa_width = w;
+        game_aa_height = h;
+        reset = true;
+    }
+    // This frame's jitter from the game's TAA constants (render pixels). RecordFsr3/RecordDlss
+    // apply toggle 1 << 26 (the opposite sign) as on the Bloodborne path.
+    std::memcpy(jitter.data(), constants.data() + game_aa->jitter_dword, sizeof(float) * 2);
+
+    const auto color_view = CachedView(*color, vk::Format::eB10G11R11UfloatPack32,
+                                       vk::ImageAspectFlagBits::eColor);
+    const auto motion_view_game =
+        CachedView(*motion, vk::Format::eR16G16Sfloat, vk::ImageAspectFlagBits::eColor);
+    const auto linear_view =
+        CachedView(*linear, vk::Format::eR32Sfloat, vk::ImageAspectFlagBits::eColor);
+    scheduler.EndRendering();
+    const auto read = vk::AccessFlagBits2::eShaderRead;
+    const auto cs_stage = vk::PipelineStageFlagBits2::eComputeShader;
+    runtime.Transit(color, vk::ImageLayout::eGeneral, cs_stage, read);
+    runtime.Transit(motion, vk::ImageLayout::eGeneral, cs_stage, read);
+    runtime.Transit(linear, vk::ImageLayout::eGeneral, cs_stage, read);
+    runtime.FlushBarriers();
+    const auto cmdbuf = scheduler.CommandBuffer();
+    const Breadcrumbs::Scope crumb{cmdbuf, scheduler.CrumbStream(), "game TAA stand-in"};
+    const auto all = vk::PipelineStageFlagBits2::eAllCommands;
+    const auto barrier = [&](vk::Image image, vk::ImageLayout old_layout,
+                             vk::PipelineStageFlags2 src, vk::AccessFlags2 src_access,
+                             vk::PipelineStageFlags2 dst, vk::AccessFlags2 dst_access) {
+        const vk::ImageMemoryBarrier2 b{
+            .srcStageMask = src, .srcAccessMask = src_access,
+            .dstStageMask = dst, .dstAccessMask = dst_access,
+            .oldLayout = old_layout, .newLayout = vk::ImageLayout::eGeneral,
+            .image = image,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
+    };
+    const auto rw = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite;
+    barrier(vk::Image(game_aa_depth), vk::ImageLayout::eUndefined, all, {}, cs_stage,
+            vk::AccessFlagBits2::eShaderWrite);
+    barrier(vk::Image(motion_image), vk::ImageLayout::eUndefined, all, {}, cs_stage,
+            vk::AccessFlagBits2::eShaderWrite);
+    barrier(vk::Image(output_image), vk::ImageLayout::eUndefined, all, {}, all, rw);
+
+    // The upscaler's depth and motion vectors from the game's.
+    const float near_z = 0.1f, far_z = game_aa->far;
+    {
+        const vk::DescriptorImageInfo depth_in{.imageView = linear_view,
+                                               .imageLayout = vk::ImageLayout::eGeneral};
+        const vk::DescriptorImageInfo motion_in{.imageView = motion_view_game,
+                                                .imageLayout = vk::ImageLayout::eGeneral};
+        const vk::DescriptorImageInfo depth_out{.imageView = *game_aa_depth_view,
+                                                .imageLayout = vk::ImageLayout::eGeneral};
+        const vk::DescriptorImageInfo motion_out{.imageView = *motion_view,
+                                                 .imageLayout = vk::ImageLayout::eGeneral};
+        const std::array<vk::WriteDescriptorSet, 4> writes{{
+            {.dstBinding = 0, .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eSampledImage, .pImageInfo = &depth_in},
+            {.dstBinding = 1, .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eSampledImage, .pImageInfo = &motion_in},
+            {.dstBinding = 2, .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &depth_out},
+            {.dstBinding = 3, .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &motion_out},
+        }};
+        // The game's vectors are current minus previous; the upscalers take previous minus
+        // current (the Bloodborne path's camera motion convention).
+        const std::array<float, 4> push{near_z, far_z, -1.0f, -1.0f};
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *game_aa_prep_pipeline);
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute,
+                                    *game_aa_prep_pipeline_layout, 0, writes);
+        cmdbuf.pushConstants(*game_aa_prep_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                             sizeof(push), push.data());
+        cmdbuf.dispatch((w + 7) / 8, (h + 7) / 8, 1);
+    }
+    barrier(vk::Image(game_aa_depth), vk::ImageLayout::eGeneral, cs_stage,
+            vk::AccessFlagBits2::eShaderWrite, all, read);
+    barrier(vk::Image(motion_image), vk::ImageLayout::eGeneral, cs_stage,
+            vk::AccessFlagBits2::eShaderWrite, all, read);
+
+    const auto now = std::chrono::steady_clock::now();
+    float frame_ms = std::chrono::duration<float, std::milli>(now - last_frame).count();
+    if (frame_ms <= 0.0f || frame_ms > 200.0f) {
+        frame_ms = 16.6f;
+    }
+    last_frame = now;
+    bool dispatched = false;
+    if (UseDlss()) {
+        dispatched = RecordDlss(
+            cmdbuf,
+            {color->GetImage(), color_view, vk::Format::eB10G11R11UfloatPack32,
+             vk::ImageAspectFlagBits::eColor, w, h},
+            {vk::Image(game_aa_depth), *game_aa_depth_view, vk::Format::eR32Sfloat,
+             vk::ImageAspectFlagBits::eColor, w, h},
+            w, h, w, h, frame_ms, true);
+    } else if (context) {
+        dispatched = RecordFsr3(cmdbuf, color->GetImage(), vk::Format::eB10G11R11UfloatPack32,
+                                color->usage_flags, vk::Image(game_aa_depth),
+                                vk::Format::eR32Sfloat,
+                                vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled,
+                                vk::ImageAspectFlagBits::eColor, w, h, w, h, frame_ms, false,
+                                near_z, far_z, 1.0f);
+    }
+    if (!dispatched) {
+        return;
+    }
+    reset = false;
+    ExtraSharpen(vk::Image(output_image), false, w, h);
+    game_aa_ready = true;
+    // BB_GAME_AA_LOG=N: the first N frames' jitter (checks the inputs on a slow GPU).
+    static const long log_frames = [] {
+        const char* v = std::getenv("BB_GAME_AA_LOG");
+        return v ? std::strtol(v, nullptr, 10) : 0L;
+    }();
+    if (game_aa_frames++ < u64(log_frames)) {
+        std::printf("Upscaler: game TAA stand-in frame %llu: %s %ux%u, jitter %.4f %.4f\n",
+                    (unsigned long long)game_aa_frames, UseDlss() ? "DLSS" : "FSR 3.1", w, h,
+                    jitter[0], jitter[1]);
+    }
+}
+
+bool TemporalUpscaler::RecordFsr3(vk::CommandBuffer cmdbuf, vk::Image color,
+                                  vk::Format color_format, vk::ImageUsageFlags color_usage,
+                                  vk::Image depth, vk::Format depth_format,
+                                  vk::ImageUsageFlags depth_usage,
+                                  vk::ImageAspectFlags depth_aspect, u32 w, u32 h, u32 ow, u32 oh,
+                                  float frame_ms, bool has_reactive, float near_z, float far_z,
+                                  float fov) {
+    FfxVkPortableUpscaleDispatchInfo info{};
+    info.structSize = sizeof(info);
+    info.commandBuffer = cmdbuf;
+    info.color = Describe(color, color_format, w, h, color_usage, vk::ImageAspectFlagBits::eColor,
+                          FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
+    info.depth = Describe(depth, depth_format, w, h, depth_usage, depth_aspect,
+                          FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
+    info.motionVectors = Describe(vk::Image(motion_image), vk::Format::eR16G16Sfloat, w, h,
+                                  vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled,
+                                  vk::ImageAspectFlagBits::eColor,
+                                  FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
+    info.output = Describe(vk::Image(output_image), vk::Format::eR16G16B16A16Sfloat, ow, oh,
+                           vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+                               vk::ImageUsageFlagBits::eTransferSrc,
+                           vk::ImageAspectFlagBits::eColor,
+                           FFX_VK_PORTABLE_RESOURCE_STATE_UNORDERED_ACCESS);
+    // Optional inputs, absent: a described but null image.
+    info.exposure.structSize = sizeof(info.exposure);
+    info.reactiveMask.structSize = sizeof(info.reactiveMask);
+    if (has_reactive) {
+        info.reactiveMask = Describe(vk::Image(reactive_image), vk::Format::eR8Unorm, w, h,
+                                     vk::ImageUsageFlagBits::eStorage |
+                                         vk::ImageUsageFlagBits::eSampled,
+                                     vk::ImageAspectFlagBits::eColor,
+                                     FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
+    }
+    info.transparencyAndCompositionMask.structSize = sizeof(info.transparencyAndCompositionMask);
+    // Toggle 1 << 26 (tests): the opposite sign convention for FSR.
+    const float sign = BbToggle::Disabled(1u << 26) ? -1.0f : 1.0f;
+    info.jitterOffset = {sign * jitter[0], sign * jitter[1]};
+    info.motionVectorScale = {1.0f, 1.0f};
+    info.renderSize = {w, h};
+    info.outputSize = {ow, oh};
+    info.frameTimeMilliseconds = frame_ms;
+    info.preExposure = 1.0f;
+    info.cameraNear = near_z;
+    info.cameraFar = far_z;
+    info.cameraVerticalFovRadians = fov;
+    info.viewSpaceToMeters = 1.0f;
+    // RCAS strength 0..1 (menu, BB_FSR_SHARPNESS); jitter at 1:1 softens the image slightly.
+    // AMD's RCAS ends at 1; ExtraSharpen adds the rest of the menu's 0..2.
+    info.sharpness = std::min(BbSettings::Get().sharpness.load(), 1.0f);
+    info.enableSharpening = BbSettings::Get().sharpen ? VK_TRUE : VK_FALSE;
+    info.reset = reset ? VK_TRUE : VK_FALSE;
+    info.frameId = frame_id++;
+
+    FfxVkPortableUpscaleCreateInfo create_info{};
+    create_info.structSize = sizeof(create_info);
+    create_info.flags = FFX_VK_PORTABLE_CONTEXT_HDR_COLOR_INPUT | FFX_VK_PORTABLE_CONTEXT_AUTO_EXPOSURE;
+    create_info.maxRenderSize = {w, h};
+    create_info.maxOutputSize = {ow, oh};
+    if (const u64 issues = ffxVkPortableValidateUpscaleDispatchInfo(&create_info, &info)) {
+        static bool printed = false;
+        if (!printed) {
+            printed = true;
+            PrintIssues("dispatch", issues);
+        }
+        failed = true;
+        return false;
+    }
+    if (ffxVkPortableUpscaleContextRecordDispatch(context, &info) != FFX_VK_PORTABLE_OK) {
+        std::printf("Upscaler: FSR 3 dispatch failed\n");
+        failed = true;
+        return false;
+    }
+    return true;
+}
+
+bool TemporalUpscaler::StoreGameAa() {
+    game_aa_ready = false;
+    auto* color = GuestImage(game_aa->color, vk::Format::eB10G11R11UfloatPack32);
+    if (!color || color->info.size.width != game_aa_width ||
+        color->info.size.height != game_aa_height) {
+        return false; // the game's copy writes its own TAA result
+    }
+    const auto color_view = CachedView(*color, vk::Format::eB10G11R11UfloatPack32,
+                                       vk::ImageAspectFlagBits::eColor);
+    scheduler.EndRendering();
+    runtime.Transit(color, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                    vk::AccessFlagBits2::eShaderWrite);
+    runtime.FlushBarriers();
+    const auto cmdbuf = scheduler.CommandBuffer();
+    const vk::MemoryBarrier2 before{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite};
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &before});
+    const vk::DescriptorImageInfo in{.imageView = *output_view,
+                                     .imageLayout = vk::ImageLayout::eGeneral};
+    const vk::DescriptorImageInfo out{.imageView = color_view,
+                                      .imageLayout = vk::ImageLayout::eGeneral};
+    const std::array<vk::WriteDescriptorSet, 2> writes{{
+        {.dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &in},
+        {.dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &out},
+    }};
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *game_aa_store_pipeline);
+    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *game_aa_store_pipeline_layout,
+                                0, writes);
+    cmdbuf.dispatch((game_aa_width + 7) / 8, (game_aa_height + 7) / 8, 1);
+    const vk::MemoryBarrier2 after{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite};
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
+    dispatched_last_frame = true;
+    return true;
 }
 
 bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
@@ -746,6 +1093,28 @@ void TemporalUpscaler::CreatePipelines() {
             .addressModeW = vk::SamplerAddressMode::eClampToEdge}));
         taa_pipeline = compute(TAA_COMP, *taa_pipeline_layout);
     }
+    {
+        // Game TAA stand-in: two sampled game images into two storage images, then the result
+        // into the game's scene color.
+        std::array<vk::DescriptorSetLayoutBinding, 4> bindings{};
+        for (u32 i = 0; i < bindings.size(); ++i) {
+            bindings[i] = {.binding = i,
+                           .descriptorType = i < 2 ? vk::DescriptorType::eSampledImage
+                                                   : vk::DescriptorType::eStorageImage,
+                           .descriptorCount = 1,
+                           .stageFlags = vk::ShaderStageFlagBits::eCompute};
+        }
+        game_aa_prep_desc_layout = Check(device.createDescriptorSetLayoutUnique({
+            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+            .bindingCount = u32(bindings.size()), .pBindings = bindings.data()}));
+        const vk::PushConstantRange push{vk::ShaderStageFlagBits::eCompute, 0, 4 * sizeof(float)};
+        game_aa_prep_pipeline_layout = Check(device.createPipelineLayoutUnique({
+            .setLayoutCount = 1, .pSetLayouts = &*game_aa_prep_desc_layout,
+            .pushConstantRangeCount = 1, .pPushConstantRanges = &push}));
+        game_aa_prep_pipeline = compute(GAME_AA_PREP_COMP, *game_aa_prep_pipeline_layout);
+    }
+    storage_layout(2, game_aa_store_desc_layout, game_aa_store_pipeline_layout, sizeof(u32));
+    game_aa_store_pipeline = compute(GAME_AA_STORE_COMP, *game_aa_store_pipeline_layout);
 }
 
 void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
@@ -1225,73 +1594,11 @@ void TemporalUpscaler::Run() {
             {input_depth, input_depth_view, depth_format, vk::ImageAspectFlagBits::eDepth, w, h}, w, h,
             ow, oh, frame_ms, true);
     } else {
-        FfxVkPortableUpscaleDispatchInfo info{};
-        info.structSize = sizeof(info);
-        info.commandBuffer = cmdbuf;
-        info.color = Describe(input_color, color.info.pixel_format, w, h,
-                              color.usage_flags, vk::ImageAspectFlagBits::eColor,
-                              FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
-        info.depth = Describe(input_depth, depth_format, w, h, depth.usage_flags,
-                              vk::ImageAspectFlagBits::eDepth,
-                              FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
-        info.motionVectors = Describe(vk::Image(motion_image), vk::Format::eR16G16Sfloat, w, h,
-                                      vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled,
-                                      vk::ImageAspectFlagBits::eColor,
-                                      FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
-        info.output = Describe(vk::Image(output_image), vk::Format::eR16G16B16A16Sfloat, ow, oh,
-                               vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
-                                   vk::ImageUsageFlagBits::eTransferSrc,
-                               vk::ImageAspectFlagBits::eColor,
-                               FFX_VK_PORTABLE_RESOURCE_STATE_UNORDERED_ACCESS);
-        // Optional inputs, absent: a described but null image.
-        info.exposure.structSize = sizeof(info.exposure);
-        info.reactiveMask.structSize = sizeof(info.reactiveMask);
-        if (has_reactive) {
-            info.reactiveMask = Describe(vk::Image(reactive_image), vk::Format::eR8Unorm, w, h,
-                                         vk::ImageUsageFlagBits::eStorage |
-                                             vk::ImageUsageFlagBits::eSampled,
-                                         vk::ImageAspectFlagBits::eColor,
-                                         FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
-        }
-        info.transparencyAndCompositionMask.structSize = sizeof(info.transparencyAndCompositionMask);
-        // Toggle 1 << 26 (tests): the opposite sign convention for FSR.
-        const float sign = BbToggle::Disabled(1u << 26) ? -1.0f : 1.0f;
-        info.jitterOffset = {sign * jitter[0], sign * jitter[1]};
-        info.motionVectorScale = {1.0f, 1.0f};
-        info.renderSize = {w, h};
-        info.outputSize = {ow, oh};
-        info.frameTimeMilliseconds = frame_ms;
-        info.preExposure = 1.0f;
-        info.cameraNear = camera_motion.Near();
-        info.cameraFar = 3000.0f;
-        info.cameraVerticalFovRadians = camera_motion.VerticalFov();
-        info.viewSpaceToMeters = 1.0f;
-        // RCAS strength 0..1 (menu, BB_FSR_SHARPNESS); jitter at 1:1 softens the image slightly.
-        // AMD's RCAS ends at 1; ExtraSharpen adds the rest of the menu's 0..2.
-        info.sharpness = std::min(BbSettings::Get().sharpness.load(), 1.0f);
-        info.enableSharpening = BbSettings::Get().sharpen ? VK_TRUE : VK_FALSE;
-        info.reset = reset ? VK_TRUE : VK_FALSE;
-        info.frameId = frame_id++;
-    
-        FfxVkPortableUpscaleCreateInfo create_info{};
-        create_info.structSize = sizeof(create_info);
-        create_info.flags = FFX_VK_PORTABLE_CONTEXT_HDR_COLOR_INPUT | FFX_VK_PORTABLE_CONTEXT_AUTO_EXPOSURE;
-        create_info.maxRenderSize = {w, h};
-        create_info.maxOutputSize = {ow, oh};
-        if (const u64 issues = ffxVkPortableValidateUpscaleDispatchInfo(&create_info, &info)) {
-            static bool printed = false;
-            if (!printed) {
-                printed = true;
-                PrintIssues("dispatch", issues);
-            }
-            failed = true;
-        } else if (ffxVkPortableUpscaleContextRecordDispatch(context, &info) !=
-                   FFX_VK_PORTABLE_OK) {
-            std::printf("Upscaler: FSR 3 dispatch failed\n");
-            failed = true;
-        } else {
-            dispatched = true;
-        }
+        dispatched = RecordFsr3(cmdbuf, input_color, color.info.pixel_format, color.usage_flags,
+                                input_depth, depth_format, depth.usage_flags,
+                                vk::ImageAspectFlagBits::eDepth, w, h, ow, oh, frame_ms,
+                                has_reactive, camera_motion.Near(), 3000.0f,
+                                camera_motion.VerticalFov());
     }
     if (dispatched) {
         reset = false;
@@ -2210,6 +2517,13 @@ bool TemporalUpscaler::PresentDumpDue() {
     }
     --present_dump_remaining;
     return true;
+}
+
+void TemporalUpscaler::DumpGuestImage(vk::Image image, u32 width, u32 height,
+                                      u32 bytes_per_pixel, const char* name) {
+    scheduler.EndRendering();
+    DumpImages(instance, scheduler, scheduler.CommandBuffer(), present_dump_index - 1,
+               {{image, width, height, bytes_per_pixel, name, "raw"}});
 }
 
 void TemporalUpscaler::DumpPresented(vk::Image image, u32 width, u32 height, vk::Format format) {

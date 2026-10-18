@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <mutex>
 #include <unordered_map>
 #include <dlfcn.h>
@@ -14,6 +15,7 @@
 #include "bbport_sections.h"
 #include "game_profile.h"
 #include "bbport_ce_stats.h"
+#include "bbport_settings.h"
 #include "bbport_toggles.h"
 #include "bbport_write_log.h"
 #include "bbport_free_check.h"
@@ -47,6 +49,55 @@
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace Vulkan {
+
+// bbport BB_SKIP_SHADERS_FILE=path (diagnostics): draws whose vertex or pixel shader hash (hex,
+// as in frame captures) is listed in the file are left out. Re-read twice a second, so one run
+// can try several sets.
+static bool SkipDrawFor(u64 vs_hash, u64 ps_hash) {
+    static const char* path = std::getenv("BB_SKIP_SHADERS_FILE");
+    if (!path) {
+        return false;
+    }
+    static std::mutex lock;
+    static std::vector<u64> hashes;
+    static auto checked = std::chrono::steady_clock::time_point{};
+    std::scoped_lock lk{lock};
+    if (const auto now = std::chrono::steady_clock::now();
+        now - checked > std::chrono::milliseconds(500)) {
+        checked = now;
+        hashes.clear();
+        if (FILE* f = std::fopen(path, "r")) {
+            unsigned long long h;
+            while (std::fscanf(f, "%llx", &h) == 1) {
+                hashes.push_back(h);
+            }
+            std::fclose(f);
+        }
+    }
+    return std::ranges::find(hashes, vs_hash) != hashes.end() ||
+           (ps_hash && std::ranges::find(hashes, ps_hash) != hashes.end());
+}
+
+// bbport: the game's motion blur pass (games/: Ratchet) is left out when the Motion blur effect
+// is off in the menu (bbport.ini effect_motion_blur=0), or with experiment bit 1 of
+// BB_TOGGLE_FILE (A/B in one run).
+static bool SkipMotionBlur(u64 ps_hash) {
+    static const u64 shader = Game::MotionBlurShader();
+    if (!shader || ps_hash != shader) {
+        return false;
+    }
+    static const int effect = [] {
+        for (int e = 0; e < BbSettings::EffectCount; ++e) {
+            if (std::string_view{BbSettings::Effects[e].key} == "effect_motion_blur") {
+                return e;
+            }
+        }
+        return -1;
+    }();
+    return BbToggle::Experiment(1) ||
+           (effect >= 0 && !BbSettings::Get().effects[effect].load(std::memory_order_relaxed));
+}
+
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
@@ -1666,10 +1717,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             ResolveIndexBuffer(index_offset);
         }
     }
-    EmitVertexBuffers();
-    if (is_indexed) {
-        EmitIndexBuffer();
-    }
 
     if (needs_barrier) {
         runtime.FlushBarriers();
@@ -1778,6 +1825,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
+    // bbport: vertex input and buffers go in right before the draw. Anything above may move
+    // recording to a new command buffer (CommandBuffer() starts a direct segment, a read trap
+    // Finish()es), which starts without them (VUID-vkCmdDraw-None-04914 on devbox).
+    EmitVertexBuffers();
+    if (is_indexed) {
+        EmitIndexBuffer();
+    }
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
@@ -1813,9 +1867,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         .program = {vs_info.ProgramBase(), ps_info ? ps_info->ProgramBase() : 0},
         .count = {num_indices, num_instances, 0},
     };
+    const bool skip_draw = SkipDrawFor(vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0) ||
+                           SkipMotionBlur(ps_info ? ps_info->pgm_hash : 0);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, bound_pipeline->Handle());
-        if (is_indexed) {
+        if (skip_draw) {
+        } else if (is_indexed) {
             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
         } else {
             cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
@@ -1936,9 +1993,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     }
     const auto state = BeginRendering(pipeline);
 
-    BindVertexBuffers(pipeline);
+    ResolveVertexBuffers(pipeline, nullptr);
     if (is_indexed) {
-        BindIndexBuffer();
+        ResolveIndexBuffer(0);
     }
 
     const auto [buffer, base] =
@@ -1970,6 +2027,10 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
+    EmitVertexBuffers(); // right before the draw, as in DrawRecord
+    if (is_indexed) {
+        EmitIndexBuffer();
+    }
 
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
                                  : sizeof(VkDrawIndirectCommand)));
@@ -1989,9 +2050,13 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         .address = indirect.args,
         .count = {max_count, stride, 0},
     };
+    const bool skip_draw = SkipDrawFor(vs_crumb ? vs_crumb->pgm_hash : 0,
+                                       ps_crumb ? ps_crumb->pgm_hash : 0) ||
+                           SkipMotionBlur(ps_crumb ? ps_crumb->pgm_hash : 0);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, bound_pipeline->Handle());
-        if (is_indexed) {
+        if (skip_draw) {
+        } else if (is_indexed) {
             if (counts) {
                 cmdbuf.drawIndexedIndirectCount(args, args_offset, counts, counts_offset, max_count,
                                                 stride);
@@ -2029,6 +2094,27 @@ void Rasterizer::DispatchDirect() {
     DispatchRecord(pipeline);
 }
 
+std::span<const u32> Rasterizer::StageConstants(const Shader::Info& stage) {
+    for (u32 index = 0; index < stage.buffers.size(); ++index) {
+        const auto& desc = stage.buffers[index];
+        if (desc.IsSpecial()) {
+            continue;
+        }
+        // The draw pipe's copy (what the shader reads), else the game's memory.
+        if (const RingBinding* ring = num_ring_stages ? FindRingBinding(stage, index) : nullptr) {
+            return {reinterpret_cast<const u32*>(constant_ring->Data(ring->offset)),
+                    ring->size / sizeof(u32)};
+        }
+        const auto vsharp = desc.GetSharp(stage);
+        if (vsharp.base_address == 0 || !memory->IsValidGpuMapping(vsharp.base_address, 0)) {
+            return {};
+        }
+        const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
+        return {reinterpret_cast<const u32*>(vsharp.base_address), size / sizeof(u32)};
+    }
+    return {};
+}
+
 void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     BB_SECTION(DispatchRecord);
     buffer_cache.NewPacket();
@@ -2053,7 +2139,15 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         }
     };
     if (upscaler->Enabled()) {
-        upscaler->OnDispatch(cs.pgm_hash);
+        // bbport: the game TAA stand-in reads this frame's jitter from the TAA's constants; a
+        // dispatch whose result the upscaler wrote instead does not run.
+        std::span<const u32> constants;
+        if (const u64 taa = upscaler->GameAaShader(); taa && cs.pgm_hash == taa) {
+            constants = StageConstants(cs);
+        }
+        if (upscaler->OnDispatch(cs.pgm_hash, constants)) {
+            return;
+        }
     }
     bool hle;
     {
@@ -2202,6 +2296,7 @@ void Rasterizer::Finish() {
 
 void Rasterizer::OnSubmit() {
     DrainDrawPipe();
+    BbStats::upload_epoch.fetch_add(1, std::memory_order_relaxed);
     if (fault_process_pending) {
         fault_process_pending = false;
         buffer_cache.ProcessFaultBuffer();
@@ -3806,8 +3901,32 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             bound_images.emplace_back(image_id);
 
             auto& image = texture_cache.GetImage(image_id);
+            // bbport BB_SWAP_RB=addr,addr... (diagnostics): those textures are sampled with red
+            // and blue swapped, to find which image a wrong-coloured surface comes from.
+            static const std::vector<VAddr> swap_rb = [] {
+                std::vector<VAddr> out;
+                for (const char* p = std::getenv("BB_SWAP_RB"); p && *p;) {
+                    char* end = nullptr;
+                    out.push_back(std::strtoull(p, &end, 0));
+                    p = end && *end == ',' ? end + 1 : nullptr;
+                }
+                return out;
+            }();
+            const VideoCore::TextureCache::ImageDesc* view_desc = &desc;
+            if (!swap_rb.empty() && !is_storage &&
+                std::ranges::find(swap_rb, image.info.guest_address) != swap_rb.end() &&
+                image_desc_storage.size() < image_desc_storage.capacity()) {
+                auto& swapped = image_desc_storage.emplace_back(desc);
+                auto& m = swapped.view_info.mapping;
+                const auto r = m.r == vk::ComponentSwizzle::eIdentity ? vk::ComponentSwizzle::eR : m.r;
+                const auto b = m.b == vk::ComponentSwizzle::eIdentity ? vk::ComponentSwizzle::eB : m.b;
+                m.r = b;
+                m.b = r;
+                view_desc = &swapped;
+                memo_entry = nullptr;
+            }
             auto& image_view = texture_cache.FindTexture(
-                image_id, desc, memo_entry ? &memo_entry->view_memo : nullptr, !on_helper);
+                image_id, *view_desc, memo_entry ? &memo_entry->view_memo : nullptr, !on_helper);
             const auto binding = image.binding;
 
             // bbport: a proxied scene image sampled with normalized coordinates reads the proxy:

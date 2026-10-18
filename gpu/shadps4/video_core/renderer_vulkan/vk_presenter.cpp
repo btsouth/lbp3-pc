@@ -12,6 +12,7 @@
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "bbport_game_menu.h"
 #include "bbport_overlay.h"
@@ -156,6 +157,36 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
+
+    // bbport: what each scheduler and presentation frame has handed to the queue they share,
+    // when a GPU wait is stuck (one batch waiting for something never signalled holds the rest).
+    Semaphore::AddStallReporter([this] {
+        draw_scheduler.ReportState("draw");
+        present_scheduler.ReportState("present");
+        flip_scheduler.ReportState("flip");
+        const vk::Device device = instance.GetDevice();
+        for (const Frame& frame : present_frames) {
+            const char* owner = frame.ready_semaphore == draw_scheduler.GetWorkSemaphore()->Handle()
+                                    ? "draw"
+                                : frame.ready_semaphore == present_scheduler.GetWorkSemaphore()->Handle()
+                                    ? "present"
+                                : frame.ready_semaphore == flip_scheduler.GetWorkSemaphore()->Handle()
+                                    ? "flip"
+                                    : "none";
+            std::printf("  frame %u: ready at %s tick %llu, present fence %s\n", u32(frame.id), owner,
+                        (unsigned long long)frame.ready_tick,
+                        device.getFenceStatus(frame.present_done) == vk::Result::eSuccess
+                            ? "signalled"
+                            : "not signalled");
+        }
+        std::printf("  swapchain: %u images, %s, acquire slot %u (its last present: tick %llu), "
+                    "image %u\n",
+                    swapchain.GetImageCount(), vk::to_string(swapchain.GetPresentMode()).c_str(),
+                    swapchain.GetFrameIndex(), (unsigned long long)swapchain.PendingAcquireWait(),
+                    swapchain.GetImageIndex());
+        rasterizer->GetBufferCache().ReportArenaBinds();
+        Breadcrumbs::ReportStuck("a GPU wait made no progress for 3 s");
+    });
 
     // bbport (diagnostics): where each timeline stands when a game's flip watchdog fires.
     static Presenter* reported = nullptr;
@@ -406,6 +437,52 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
             runtime.FlushBarriers();
             upscaler.DumpPresented(image.GetImage(), image_size.width, image_size.height,
                                    view_info.format);
+            // bbport BB_DUMP_IMAGES=addr,... (diagnostics): the game's images at those addresses
+            // too (render targets as they stand at the flip), named by address and format.
+            static const std::vector<VAddr> extra = [] {
+                std::vector<VAddr> out;
+                for (const char* p = std::getenv("BB_DUMP_IMAGES"); p && *p;) {
+                    char* end = nullptr;
+                    out.push_back(std::strtoull(p, &end, 0));
+                    p = end && *end == ',' ? end + 1 : nullptr;
+                }
+                return out;
+            }();
+            static std::vector<std::string> names;
+            for (const VAddr address : extra) {
+                texture_cache.ForEachImageInRegion(address, 1, [&](VideoCore::ImageId,
+                                                                   VideoCore::Image& img) {
+                    if (img.info.guest_address != address) {
+                        return;
+                    }
+                    u32 bpp = 0;
+                    switch (img.info.pixel_format) {
+                    case vk::Format::eR8G8B8A8Unorm:
+                    case vk::Format::eR8G8B8A8Srgb:
+                    case vk::Format::eB8G8R8A8Unorm:
+                    case vk::Format::eB8G8R8A8Srgb:
+                    case vk::Format::eA2B10G10R10UnormPack32:
+                    case vk::Format::eB10G11R11UfloatPack32:
+                    case vk::Format::eR32Sfloat:
+                    case vk::Format::eR16G16Sfloat:
+                        bpp = 4;
+                        break;
+                    case vk::Format::eR16G16B16A16Sfloat:
+                        bpp = 8;
+                        break;
+                    default:
+                        return;
+                    }
+                    names.push_back(fmt::format("img{:x}_{}", address,
+                                                vk::to_string(img.info.pixel_format)));
+                    runtime.Transit(&img, vk::ImageLayout::eGeneral,
+                                    vk::PipelineStageFlagBits2::eTransfer,
+                                    vk::AccessFlagBits2::eTransferRead);
+                    runtime.FlushBarriers();
+                    upscaler.DumpGuestImage(img.GetImage(), img.info.size.width,
+                                            img.info.size.height, bpp, names.back().c_str());
+                });
+            }
         }
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
                         vk::PipelineStageFlagBits2::eFragmentShader,
@@ -608,6 +685,11 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     }
 
+    // bbport: the slot's acquire semaphore is reused only once the GPU ran the present that
+    // waited for it (AcquireSlots).
+    if (const u64 tick = swapchain.PendingAcquireWait()) {
+        present_scheduler.Wait(tick);
+    }
     using Libraries::VideoOut::FlipTrace::Note;
     namespace FlipTrace = Libraries::VideoOut::FlipTrace;
     Note(FlipTrace::AcquireBegin, 0);
@@ -754,6 +836,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
+    swapchain.NoteAcquireWait(scheduler.CurrentTick()); // this submission's tick
     Note(FlipTrace::PresentSubmit, s64(frame->ready_tick));
     scheduler.Flush(info);
 

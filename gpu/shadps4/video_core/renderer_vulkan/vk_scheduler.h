@@ -855,6 +855,10 @@ public:
         }
     }
 
+    /// bbport: one line for the GPU stall report: ticks recorded, handed to the queue and done,
+    /// and work the recording threads still hold.
+    void ReportState(const char* name);
+
     /// bbport: the breadcrumb stream of this scheduler, for passes recorded on CommandBuffer().
     [[nodiscard]] u32 CrumbStream() const noexcept {
         return crumb_stream;

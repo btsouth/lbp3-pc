@@ -48,6 +48,8 @@ void runtime_thread_attach_main(void);
 int32_t *runtime_errno(void);
 uintptr_t runtime_sema_resolve(const char *name);
 uintptr_t runtime_evf_resolve(const char *name);
+uintptr_t runtime_psem_resolve(const char *name);
+void runtime_psem_report(void);
 uintptr_t runtime_fiber_resolve(const char *name);
 uintptr_t runtime_misc_resolve(const char *name);
 void runtime_sse4a_init(uintptr_t image);

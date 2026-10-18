@@ -4,7 +4,8 @@
 
 /* The settings menu of the GPU library restarts through probe.c, which tests do not link. */
 void runtime_restart(void) { abort(); }
-void runtime_guest_frames(uintptr_t a,uintptr_t b) { (void)a; (void)b; abort(); }
+/* Guest frame chain printing on a fault lives in probe.c too. */
+void runtime_guest_frames(uintptr_t rbp, uintptr_t rsp) { (void)rbp; (void)rsp; }
 #include <assert.h>
 #include <pthread.h>
 #include <stdint.h>

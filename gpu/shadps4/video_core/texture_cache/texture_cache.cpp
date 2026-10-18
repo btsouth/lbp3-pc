@@ -110,8 +110,19 @@ void TextureCache::ProcessDownloadImages() {
     }
     std::unique_lock lk{download_images_mutex};
     downloads_queued.store(false, std::memory_order_relaxed);
+    // bbport BB_READBACK_LINEAR_ASYNC=1: the copy reaches the game's memory once the GPU is done
+    // (a deferred operation) instead of this thread waiting for the GPU at every fence.
+    static const bool async = [] {
+        const char* env = std::getenv("BB_READBACK_LINEAR_ASYNC");
+        return env && env[0] == '1';
+    }();
     for (const ImageId image_id : download_images) {
-        DownloadImageMemory(image_id, true);
+        DownloadImageMemory(image_id, !async);
+    }
+    if (async && !download_images.empty()) {
+        // Submitted now: the copy's deferred write waits for this tick, and the game may wait
+        // for the copy before it sends more work.
+        scheduler.Flush();
     }
     download_images.clear();
 }

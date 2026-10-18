@@ -360,6 +360,9 @@ private:
     void CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
                              boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out);
     void PrintPipeStats();
+    /// bbport: a stage's first constant buffer as the shader reads it (the constant ring's copy
+    /// on the draw pipe, else guest memory); empty when unknown.
+    std::span<const u32> StageConstants(const Shader::Info& stage);
     /// The registers of the draw being recorded: stage B's copy there, else Liverpool's.
     const AmdGpu::Regs& Regs() const;
     AmdGpu::CbDbExtent CbExtent(u32 index) const;

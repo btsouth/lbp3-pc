@@ -259,6 +259,18 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
         (subres_range->base != SubresourceBase{} || subres_range->extent != info.resources);
     const bool partially_transited = !subresource_states.empty();
 
+    // bbport: Ratchet & Clank binds thousands of textures a frame through views of some of
+    // their mips (streamed levels): each walked every subresource state, ~10% of the draw
+    // recording thread, almost always to find nothing to do. Experiment bit 8: the walk (A/B).
+    auto& noop = backing->partial_noop;
+    if (needs_partial_transition && partially_transited && noop.valid &&
+        noop.range == *subres_range && noop.layout == dst_layout &&
+        noop.access_mask == dst_mask && !BbToggle::Experiment(8)) {
+        last_state.pl_stage = dst_stage;
+        return;
+    }
+    const size_t barriers_before = barriers.size();
+    noop.valid = false;
     if (needs_partial_transition || partially_transited) {
         if (!partially_transited) {
             subresource_states.resize(info.resources.levels * info.resources.layers);
@@ -319,6 +331,8 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
 
         if (!needs_partial_transition) {
             subresource_states.clear();
+        } else if (barriers.size() == barriers_before) {
+            noop = {*subres_range, dst_layout, dst_mask, true};
         }
     } else { // Full resource transition
         constexpr auto write_flags = vk::AccessFlagBits2::eTransferWrite |

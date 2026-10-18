@@ -114,15 +114,22 @@ static int patch_site(uint8_t *site, unsigned size, const uint8_t *target) {
     return 1;
 }
 
+static int rewritten(const uint8_t *b) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    return patching && (b[0] == 0xe9 || (b[0] == 0xeb && b[1] == 0xfe));
+}
+
 int runtime_sse4a_fault(void *context) {
     ucontext_t *uc = context;
     uint8_t *b = (uint8_t *)uc->uc_mcontext.gregs[REG_RIP];
-    /* Patched by another thread after this one trapped there: run the jump. */
-    if (patched && (b[0] == 0xe9 || (b[0] == 0xeb && b[1] == 0xfe))) return 1;
+    /* Being patched or patched by another thread after this one trapped there (a jump never
+     * raises SIGILL itself): run the jump, or spin on the jump-to-self until it is complete. */
+    if (rewritten(b)) return 1;
     if (!uc->uc_mcontext.fpregs || (b[0] != 0x66 && b[0] != 0xf2)) return 0;
     unsigned i = 1, rex = 0;
     if ((b[1] & 0xf0) == 0x40) { rex = b[1]; i = 2; }
-    if (b[i] != 0x0f || (b[i+1] != 0x78 && b[i+1] != 0x79) || (b[i+2] & 0xc0) != 0xc0) return 0;
+    if (b[i] != 0x0f || (b[i+1] != 0x78 && b[i+1] != 0x79) || (b[i+2] & 0xc0) != 0xc0)
+        return rewritten(b); /* read while another thread rewrote it */
     const int insert = b[0] == 0xf2, immediate = b[i+1] == 0x78;
     const unsigned modrm = b[i+2];
     const unsigned reg = ((modrm >> 3) & 7) | ((rex & 4) << 1), rm = (modrm & 7) | ((rex & 1) << 3);

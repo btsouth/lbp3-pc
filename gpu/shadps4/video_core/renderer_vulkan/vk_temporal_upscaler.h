@@ -15,6 +15,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -25,6 +26,10 @@
 #include "video_core/texture_cache/image.h"
 
 struct FfxVkPortableUpscaleContext;
+
+namespace Game {
+struct SceneAa;
+}
 
 namespace VideoCore {
 class TextureCache;
@@ -66,7 +71,12 @@ public:
     void OnSceneComposite();
 
     /// Before a compute dispatch: the post-processing combine shader triggers the upscale.
-    void OnDispatch(u64 cs_hash);
+    /// `constants`: the dispatch's first constant buffer when known (the game TAA path reads its
+    /// jitter there). True when the game's dispatch is replaced and must not run.
+    bool OnDispatch(u64 cs_hash, std::span<const u32> constants = {});
+    /// The game's TAA shader when the upscaler stands in for it (games/<game>.cpp SceneAa), else 0:
+    /// the rasterizer passes its constants to OnDispatch.
+    [[nodiscard]] u64 GameAaShader() const noexcept;
 
     /// Start of a frame in the command stream (display pass).
     bool OnFrameStart();
@@ -130,6 +140,9 @@ public:
     bool PresentDumpDue();
     /// Saves `image` (General layout, 4 bytes a pixel) as present_<w>x<h> in BB_DUMP_DIR.
     void DumpPresented(vk::Image image, u32 width, u32 height, vk::Format format);
+    /// BB_DUMP_IMAGES: another image (in the general layout) beside the frame just dumped.
+    void DumpGuestImage(vk::Image image, u32 width, u32 height, u32 bytes_per_pixel,
+                        const char* name);
 
 private:
     /// bbport: views of guest images the upscaler reads, kept across frames: FSR 4 registers
@@ -149,6 +162,21 @@ private:
 
     void Run();
     void RunScaled();
+    /// bbport BB_GAME_AA=1: DLSS or FSR 3 in place of a game's own TAA, at its render size (games/
+    /// game_profile.h SceneAa; Ratchet & Clank). Before the TAA: records the upscaler from the
+    /// game's scene color, motion vectors, depth and jitter. At the copy after it: writes the result
+    /// into the scene color instead (true: the game's copy is replaced).
+    [[nodiscard]] bool GameAaActive() const;
+    void RunGameAa(std::span<const u32> constants);
+    bool StoreGameAa();
+    VideoCore::Image* GuestImage(u64 address, vk::Format format, u32 width = 0, u32 height = 0);
+    /// FSR 3.1 into output_image (General) with motion_image and `jitter`; near/far/fov describe
+    /// the depth (a standard 0..1 projection) for its disocclusion test.
+    bool RecordFsr3(vk::CommandBuffer cmdbuf, vk::Image color, vk::Format color_format,
+                    vk::ImageUsageFlags color_usage, vk::Image depth, vk::Format depth_format,
+                    vk::ImageUsageFlags depth_usage, vk::ImageAspectFlags depth_aspect, u32 w,
+                    u32 h, u32 ow, u32 oh, float frame_ms, bool has_reactive, float near_z,
+                    float far_z, float fov);
     void RunUiOnly(VideoCore::ImageId color, VideoCore::ImageId depth);
     void EnsureUiResources(u32 width, u32 height, vk::Format color, vk::Format depth);
     void PrepareUiDepth(VideoCore::ImageId depth);
@@ -197,6 +225,7 @@ private:
     int applied_preset = -1;
     int applied_upscaler = -1;
     bool dispatched_last_frame = false;
+    u32 checked_frame = ~0u; ///< BbStats::frame_number at the last history check
     bool last_active = false, last_jitter = false;
 
 
@@ -235,6 +264,21 @@ private:
     vk::UniqueImageView ui_view;
     vk::UniqueImageView ui_depth_view;
     bool depth_blit = false;
+    // Game TAA stand-in (RunGameAa).
+    const Game::SceneAa* game_aa = nullptr;
+    bool game_aa_on = false;       ///< BB_GAME_AA=1 and the game has a SceneAa
+    bool game_aa_ready = false;    ///< this frame's result is in output_image
+    VideoCore::ImageId game_aa_color{};
+    VideoCore::UniqueImage game_aa_depth;
+    vk::UniqueImageView game_aa_depth_view;
+    u32 game_aa_width = 0, game_aa_height = 0;
+    u64 game_aa_frames = 0;
+    vk::UniqueDescriptorSetLayout game_aa_prep_desc_layout;
+    vk::UniquePipelineLayout game_aa_prep_pipeline_layout;
+    vk::UniquePipeline game_aa_prep_pipeline;
+    vk::UniqueDescriptorSetLayout game_aa_store_desc_layout;
+    vk::UniquePipelineLayout game_aa_store_pipeline_layout;
+    vk::UniquePipeline game_aa_store_pipeline;
     bool scaled_session = false;
     u32 ui_width = 0, ui_height = 0;
     u32 render_width = 0, render_height = 0;
