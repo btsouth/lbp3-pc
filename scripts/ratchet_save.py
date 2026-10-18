@@ -10,7 +10,7 @@ game's save code (eboot file offsets, vaddr + 0x4000):
   0xe95100). There is no checksum or hash over the data.
 - Checkpoint: u32 0, then a tagged object (magic 0x07201969: u32 count, u32 size, count x (u32
   field hash, u32 type), count x u32 name offset, values). Writer 0x11b3c0b: CurrentLevel (s32
-  level enum, LEVELS order), CurrentCheckpoint (u32 CRC-32 of the hero spawn point's name),
+  level enum, LEVELS order = gamemacroconfig's Levels list), CurrentCheckpoint (u32 CRC-32 of the hero spawn point's name),
   CurrentCheckpointId (u64 instance id of that spawn point in the level file).
 - RCPS4MacroSystem: 150 raw bytes (loader 0x4d9370): u32 current level number, u32 unlocked
   level mask (bit n = level number n; IsLevelUnlocked 0x4d9890 is what the galactic map asks),
@@ -82,7 +82,10 @@ SECTION_NAMES = {crc32(n): n for n in (
     'Checkpoint', 'HeroSystem', 'WeaponUpgradeSystem', 'XPSystem', 'ActorSaveSystem',
     'EmergentVOSystem', 'CardTradingSystem', 'RCPS4MacroSystem')}
 
-# (level, enum, level number or 0, default spawn point, its instance id). Enum = CurrentLevel.
+# (level, enum, level number or 0, default spawn point, its instance id). Enum = CurrentLevel,
+# the level's position in gamemacroconfig's Levels list (Phoenix comes before
+# Deplanetizer_Exterior there, unlike the k-names in the executable). Umbris is the Deplanetizer
+# entry's SecondaryEnum and has no CurrentLevel of its own. Checked by loading each one.
 LEVELS = [
     ('veldin', 0, 1, 'VEL_default', 0x151b880f73e3581c),
     ('prequartu', 1, 2, None, None),
@@ -95,13 +98,12 @@ LEVELS = [
     ('batalia', 8, 9, 'BAT_default', 0xf3bdef66fe21182f),
     ('quartu', 9, 10, 'QUA_default', 0xede3551dce910b28),
     ('pokitaru', 10, 11, 'POK_default', 0x177af2db445f77f8),
-    ('deplanetizer_exterior', 11, 0, 'DEP_EXT_1_01', 0xc1aeb6dd8a0cd919),
-    ('phoenix', 12, 12, 'PHO_default', 0x3a5c4ffdac0a7eec),
+    ('phoenix', 11, 12, 'PHO_default', 0x3a5c4ffdac0a7eec),
+    ('deplanetizer_exterior', 12, 0, 'DEP_EXT_1_01', 0xc1aeb6dd8a0cd919),
     ('deplanetizer', 13, 13, 'DEP_default', 0xa0700b32f8895a0d),
     ('kalebo', 14, 14, 'KAL_default', 0xf1987dd7466207e0),
-    ('deplanetizer_umbris', 15, 0, None, None),
-    ('deplanetizer_nefarious', 16, 15, 'DEP_9_01', 0xd86dce851b468d14),
-    ('museum', 17, 0, 'MUS_default', 0xb585e98d224d522a),
+    ('deplanetizer_nefarious', 15, 15, 'DEP_9_01', 0xd86dce851b468d14),
+    ('museum', 16, 0, 'MUS_default', 0xb585e98d224d522a),
 ]
 LEVEL_BY_NAME = {row[0]: row for row in LEVELS}
 LEVEL_BY_ENUM = {row[1]: row for row in LEVELS}

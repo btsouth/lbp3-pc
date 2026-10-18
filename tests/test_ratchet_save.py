@@ -162,6 +162,15 @@ class UnlockTests(unittest.TestCase):
         with self.assertRaises(rs.SaveError):
             rs.unlock(sample(), 'prequartu')
 
+    def test_level_enums_follow_the_macro_config(self):
+        # CurrentLevel is the position in gamemacroconfig's Levels list; the planet tour loaded
+        # Deplanetizer_Exterior for 12 and the museum for 16.
+        self.assertEqual([row[1] for row in rs.LEVELS], list(range(len(rs.LEVELS))))
+        enums = {name: enum for name, enum, *_ in rs.LEVELS}
+        self.assertEqual((enums['phoenix'], enums['deplanetizer_exterior'], enums['museum']),
+                         (11, 12, 16))
+        self.assertNotIn('deplanetizer_umbris', enums)
+
     def test_writes_a_save_folder_without_touching_the_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / 'source'
