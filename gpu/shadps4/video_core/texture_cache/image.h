@@ -186,6 +186,14 @@ public:
         UniqueImage image;
         State state;
         std::vector<State> subresource_states;
+        /// bbport: the last partial transition that needed no barrier: the same one again needs
+        /// none either until a barrier changes the subresource states (GetBarriers).
+        struct {
+            SubresourceRange range{};
+            vk::ImageLayout layout = vk::ImageLayout::eUndefined;
+            vk::AccessFlags2 access_mask{};
+            bool valid = false;
+        } partial_noop;
         boost::container::small_vector<ImageViewInfo, 4> image_view_infos;
         boost::container::small_vector<ImageViewId, 4> image_view_ids;
         u32 last_view = 0; ///< bbport: index of the view FindView returned last
