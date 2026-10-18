@@ -120,6 +120,9 @@ public:
     }
 
 private:
+    void ClearVolumeSlices(VideoCore::Image* dst, const VideoCore::SubresourceRange& range,
+                           const vk::ClearValue& clear_value);
+
     void (*image_access_hook)(void*) = nullptr;
     void* image_access_context = nullptr;
     const Instance& instance;
