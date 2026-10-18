@@ -4,7 +4,10 @@
 # its /nix/store with user namespaces, available on SteamOS and most desktops).
 # Running it opens the launcher; `--play` starts the game with the launcher's saved settings.
 # Data (generated files, saves, bbport.ini): ~/.local/share/bbport (BB_DATA_DIR).
+# BB_PACKAGE_GAME=ratchet: dist/Ratchet-Clank-port-x86_64.AppImage, the Ratchet & Clank launcher,
+# data in ~/.local/share/ratchet-port.
 set -euo pipefail
+if [[ ${BB_PACKAGE_GAME:-} == ratchet ]]; then name=Ratchet-Clank-port; else name=Bloodborne-bbport; fi
 cd -- "$(dirname -- "$0")/.."
 [[ -f out/bb-probe && -f out/gpu/libbbgpu.so ]] || { echo 'Build first: bash build.sh' >&2; exit 1; }
 root=$PWD
@@ -34,9 +37,9 @@ trap 'rm -rf "$work"' EXIT
 (cd "$work" && nix bundle --impure --bundler github:ralismark/nix-appimage \
     --expr "import $root/packaging {}")
 mkdir -p dist
-install -m755 "$work/bbport.AppImage" dist/Bloodborne-bbport-x86_64.AppImage
+install -m755 "$work"/*.AppImage "dist/$name-x86_64.AppImage"
 # A GC root for the package: nix-collect-garbage keeps it, and with it the outputs built here from
 # source (the Vulkan-only Mesa, GTK 4 without GStreamer, libadwaita, SDL3), so the next AppImage
 # does not build them again (only a nixpkgs update does).
 nix-build --impure packaging -o out/nix-roots/bbport > /dev/null
-ls -lh dist/Bloodborne-bbport-x86_64.AppImage
+ls -lh "dist/$name-x86_64.AppImage"
