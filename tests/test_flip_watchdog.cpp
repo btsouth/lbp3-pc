@@ -27,9 +27,9 @@ Kernel::EqueueInternal* FlipQueue(s64 handle) {
     return eq;
 }
 
-void Flip(Kernel::EqueueInternal* eq) {
+void Flip(Kernel::EqueueInternal* eq, u64 arg = 0) {
     assert(eq->TriggerEvent(FlipId, OrbisKernelEvent::Filter::VideoOut,
-                            reinterpret_cast<void*>(FlipId)));
+                            reinterpret_cast<void*>(FlipId | (arg << 16))));
 }
 
 int Wait(Kernel::EqueueInternal* eq, u32 micros) {
@@ -54,12 +54,28 @@ int main() {
     assert(!GnmDriver::sceGnmDriverCaptureInProgress());
     auto* eq = FlipQueue(1);
     // Edge triggered: two flips before a wait are one event, and the next wait times out.
-    Flip(eq);
-    Flip(eq);
-    assert(Wait(eq, 100000) == 1);
-    assert(Wait(eq, 10000) == 0);
+    Flip(eq, 41);
+    Flip(eq, 42);
     u32 zero = 0;
     OrbisKernelEvent ev[1]{};
+    assert(eq->WaitForEvents(ev, 1, &zero) == 1);
+    assert(ev[0].ident == FlipId);
+    assert(ev[0].filter == OrbisKernelEvent::Filter::VideoOut);
+    assert(ev[0].flags & OrbisKernelEvent::Flags::Clear);
+    assert(((ev[0].data >> 12) & 15) == 2);
+    assert((ev[0].data >> 16) == 42);
+    assert(Wait(eq, 10000) == 0);
+    // Count saturates at 15 and restarts from one after retrieval.
+    for (int i = 0; i < 20; ++i) {
+        Flip(eq, 100 + i);
+    }
+    assert(eq->WaitForEvents(ev, 1, &zero) == 1);
+    assert(((ev[0].data >> 12) & 15) == 15);
+    assert((ev[0].data >> 16) == 119);
+    Flip(eq, 120);
+    assert(eq->WaitForEvents(ev, 1, &zero) == 1);
+    assert(((ev[0].data >> 12) & 15) == 1);
+    assert((ev[0].data >> 16) == 120);
     assert(eq->WaitForEvents(ev, 1, &zero) == 0);
 
     // The traced boot ordering: a flip completes before the guest starts waiting.
