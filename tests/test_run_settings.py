@@ -167,7 +167,9 @@ class RatchetPacingTests(unittest.TestCase):
         # Ratchet stays at 1920x1080: a larger screen gets FSR 1 instead of a bilinear stretch.
         self.assertEqual(self.launch(keys=('BB_FSR1',), BB_FPS='60'), {'BB_FSR1': '1'})
         self.assertEqual(self.launch(keys=('BB_FSR1',), BB_FPS='60', BB_FSR1='0'), {'BB_FSR1': '0'})
-        self.assertEqual(self.launch(keys=('BB_FSR1',), title='CUSA03173', BB_FPS='30'),
+        # Bloodborne's default patches do not fit this eboot stand-in: none of them.
+        self.assertEqual(self.launch(keys=('BB_FSR1',), title='CUSA03173', BB_FPS='30',
+                                     BB_INTEL_TONEMAP_FIX='0', BB_SKIP_NETWORK_CHOICE='0'),
                          {'BB_FSR1': None})
 
 
