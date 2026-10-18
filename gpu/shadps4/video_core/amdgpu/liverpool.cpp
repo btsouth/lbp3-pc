@@ -23,6 +23,7 @@
 #include "common/debug.h"
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
+#include "core/libraries/videoout/flip_trace.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/process.h"
@@ -598,6 +599,7 @@ void RunCopyData(Vulkan::Rasterizer& rasterizer, const u8* data) {
 
 void SignalFlip(Vulkan::Rasterizer& rasterizer, const u8*) {
     rasterizer.WaitDeferredSignals();
+    Libraries::VideoOut::FlipTrace::Note(Libraries::VideoOut::FlipTrace::GfxFlipIrq);
     Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxFlip);
 }
 
@@ -1037,6 +1039,32 @@ struct DcbStats {
 };
 DcbStats g_dcb_stats;
 int g_dcb_depth;
+
+// bbport (diagnostics, ReportQueueWait): what a queue waits for now.
+struct QueueWait {
+    std::atomic<u32> kind{0}; // 0 none, 1 VO label, 2 graphics WAIT_REG_MEM, 3 compute
+    std::atomic<u64> address{0};
+    std::atomic<u32> ref{0}, mask{0}, function{0};
+    std::atomic<s64> since_ns{0};
+    void Begin(u32 k, const PM4CmdWaitRegMem* wait) {
+        address.store(wait->mem_space.Value() == PM4CmdWaitRegMem::MemSpace::Memory
+                          ? wait->Address<u64>()
+                          : wait->Reg(),
+                      std::memory_order_relaxed);
+        ref.store(wait->ref, std::memory_order_relaxed);
+        mask.store(wait->mask, std::memory_order_relaxed);
+        function.store(u32(wait->function.Value()), std::memory_order_relaxed);
+        since_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count(),
+                       std::memory_order_relaxed);
+        kind.store(k, std::memory_order_release);
+    }
+    void End() {
+        kind.store(0, std::memory_order_relaxed);
+    }
+};
+QueueWait g_gfx_wait, g_asc_wait;
 
 bool IsDrawOpcode(PM4ItOpcode op) {
     switch (op) {
@@ -2145,7 +2173,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     if (dcb_stats) {
                         ++g_dcb_stats.wait_outcome[0];
                     }
+                    g_gfx_wait.Begin(1, wait_reg_mem);
                     vo_port->WaitVoLabel([&] { return wait_reg_mem->Test(regs.reg_array); });
+                    g_gfx_wait.End();
                     break;
                 }
                 // bbport: a fence handed to the draw recording thread counts as written: that
@@ -2164,6 +2194,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 // catch up before yielding to other queues.
                 const bool met = wait_reg_mem->Test(regs.reg_array);
                 const auto wait_start = std::chrono::steady_clock::now();
+                if (!met) {
+                    g_gfx_wait.Begin(2, wait_reg_mem);
+                }
                 while (!wait_reg_mem->Test(regs.reg_array)) {
                     if (rasterizer && !rasterizer->DrawPipeIdle()) {
                         rasterizer->DrainDrawPipe(static_cast<u32>(opcode));
@@ -2176,6 +2209,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     }
                     YIELD_GFX();
                 }
+                g_gfx_wait.End();
                 if (dcb_stats) {
                     ++g_dcb_stats.wait_outcome[met ? 2 : 3];
                     g_dcb_stats.wait_ms += std::chrono::duration<double, std::milli>(
@@ -2569,6 +2603,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         case PM4ItOpcode::WaitRegMem: {
             const auto* wait_reg_mem = reinterpret_cast<const PM4CmdWaitRegMem*>(header);
             ASSERT(wait_reg_mem->engine.Value() == PM4CmdWaitRegMem::Engine::Me);
+            if (!wait_reg_mem->Test(regs.reg_array)) {
+                g_asc_wait.Begin(3, wait_reg_mem);
+            }
             while (!wait_reg_mem->Test(regs.reg_array)) {
                 // BB_HONEST_LABELS: the value may come from a fence waiting for work not
                 // submitted yet; this thread would spin on it forever.
@@ -2577,6 +2614,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 }
                 YIELD_ASC(vqid);
             }
+            g_asc_wait.End();
             break;
         }
         case PM4ItOpcode::ReleaseMem: {
@@ -2900,6 +2938,29 @@ void Liverpool::CheckSubmittedCopy(const SubmittedCopy& copy, u64 seq) {
         std::printf(" %#x:%#x", last[i % last.size()].first, last[i % last.size()].second);
     }
     std::printf("\n");
+}
+
+void ReportQueueWait() {
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    for (const auto* wait : {&g_gfx_wait, &g_asc_wait}) {
+        const u32 kind = wait->kind.load(std::memory_order_acquire);
+        const char* name = wait == &g_gfx_wait ? "graphics" : "compute";
+        if (kind == 0) {
+            std::printf("GPU queues: %s queue not in a wait\n", name);
+            continue;
+        }
+        const u64 address = wait->address.load(std::memory_order_relaxed);
+        std::printf("GPU queues: %s queue in %s on %#llx (now %#x), function %u ref %#x mask %#x, "
+                    "for %.1f ms\n",
+                    name, kind == 1 ? "a VO label wait" : "WAIT_REG_MEM",
+                    (unsigned long long)address,
+                    address >= 0x10000 ? *reinterpret_cast<const u32*>(address) : 0u,
+                    wait->function.load(), wait->ref.load(), wait->mask.load(),
+                    double(now - wait->since_ns.load()) / 1e6);
+    }
+    std::fflush(stdout);
 }
 
 } // namespace AmdGpu
