@@ -46,7 +46,8 @@ Do not ask for game files in this project's issues. They will be closed.
 
 ### AppImage (recommended)
 
-1. Download `Ratchet-Clank-port-x86_64.AppImage` from the releases page.
+1. Download `Ratchet-Clank-port-x86_64.AppImage` from the releases page. No release has been
+   published yet; until then, build from source (below).
 2. Make it executable and start it:
 
    ```bash
