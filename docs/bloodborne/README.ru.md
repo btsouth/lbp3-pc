@@ -57,8 +57,8 @@ bbport — это аналог Wine + DXVK, только для одной иг�
     модели, поэтому там она пока не по умолчанию. На Intel не проверялась. Без лаунчера —
     `BB_PC_MODEL=1/0` (не задано — по видеокарте, как *Авто*).
 
-  [Изменения в 0.5](docs/CHANGES_0.5.md); пререлизы: [pre4](docs/CHANGES_0.5-pre4.md),
-  [pre3](docs/CHANGES_0.5-pre3.md), [pre2](docs/CHANGES_0.5-pre2.md).
+  [Изменения в 0.5](../CHANGES_0.5.md); пререлизы: [pre4](../CHANGES_0.5-pre4.md),
+  [pre3](../CHANGES_0.5-pre3.md), [pre2](../CHANGES_0.5-pre2.md).
 
   Неиспользуемые текстуры освобождаются в обоих режимах, поэтому видеопамять больше не растёт
   с каждой локацией.
@@ -128,7 +128,7 @@ bbport — это аналог Wine + DXVK, только для одной иг�
   эмуляция. Таблицы дескрипторов (дампы движка констант) читает только транслятор, поэтому их
   выполняет процессор. Occlusion-запросы игры (~60 за кадр) — настоящие запросы Vulkan; предикация, `COPY_DATA`,
   `COND_EXEC` тоже переводятся (проверка — `BB_PM4_SELFTEST=1`).
-  Подробно — [docs/EMULATION_REMOVAL_PLAN.ru.md](docs/EMULATION_REMOVAL_PLAN.ru.md), «Шаг 4».
+  Подробно — [docs/EMULATION_REMOVAL_PLAN.ru.md](../EMULATION_REMOVAL_PLAN.ru.md), «Шаг 4».
 
 «Порт» здесь — сборка под одну игру, а не переписанный исходный код: исходного кода игры у
 проекта нет, и он его не содержит.
@@ -195,7 +195,7 @@ Turing). Вывод 1080p и TAA всегда идут живым путём.
 **Моды:** лаунчер подключает распакованные моды из отдельных папок (с `dvdroot_ps4/`, с лишней
 папкой-обёрткой или сразу с папками игры вроде `chr/`; регистр имён не важен), с переключателями
 и порядком загрузки. **Сторонние патчи:** XML-файлы в формате shadPS4 в папке `patches/` каталога
-данных, включаются в лаунчере. Подробнее — [моды и патчи](docs/MODS.md).
+данных, включаются в лаунчере. Подробнее — [моды и патчи](../MODS.md).
 **DLC:** дампы дополнений клади в `user/addcont/<title id>/<метка>/` (как в shadPS4, например
 `user/addcont/CUSA03173/SPEXPANSIONDLC03` для The Old Hunters): каждая такая папка сообщается
 игре как установленное дополнение.
@@ -337,8 +337,8 @@ VRAM считается не больше N МиБ: проверка повед�
 `BB_FSR411_VARIANT=int8|fp8|fp8emu` (вариант FSR 4.1.1; по умолчанию FP8, где у видеокарты есть
 матрицы FP8), `BB_READBACKS=0|1|2` (чтение игрой памяти, записанной GPU: по умолчанию 1, 2 —
 точно и медленно, 0 — выключено).
-Подробнее — в [docs/](docs); последние изменения — [docs/CHANGES_0.4.md](docs/CHANGES_0.4.md),
-[docs/CHANGES_2026-10-06.md](docs/CHANGES_2026-10-06.md).
+Подробнее — в [docs/](..); последние изменения — [docs/CHANGES_0.4.md](../CHANGES_0.4.md),
+[docs/CHANGES_2026-10-06.md](../CHANGES_2026-10-06.md).
 
 **Игра по сети (shadNet).** Отдельный модуль `out/gpu/libbbnet.so` (`gpu/bbnet`: сетевые и PSN-библиотеки
 shadPS4 из shadp2p, форка shadPS4, с клиентом shadNet); собирается, когда есть protobuf, nlohmann_json,
@@ -358,7 +358,7 @@ OpenSSL, zlib и miniupnpc (`shell.nix`), входит в AppImage. Включа
 | `patches/` | Патчи сообщества для Bloodborne |
 | `tools/` | Утилиты разработчика: скриптовые запуски, A/B-переключатели, бенчмарк FSR, переписывание шейдеров FSR 4, `fsr4cap` (запись и извлечение FSR 4.1.1) |
 | `tests/` | Тесты загрузчика, рантайма, патчей и рендерера |
-| `docs/` | Заметки и замеры ([апскейлер](docs/upscaler.md), [многопоточный GPU](docs/parallel_gpu.md), [векторы движения](docs/motion_vectors.md), [план](docs/ROADMAP.md), [журнал разработки](docs/DEVELOPMENT_LOG.ru.md)) |
+| `docs/` | Заметки и замеры ([апскейлер](../upscaler.md), [многопоточный GPU](../parallel_gpu.md), [векторы движения](../motion_vectors.md), [план](../ROADMAP.md), [журнал разработки](../DEVELOPMENT_LOG.ru.md)) |
 
 Тесты: `bash build.sh --test`, `python3 -m unittest discover -s tests` и
 `ninja -C out/gpu motion-history-test ui-composition-test scene-resolution-test motion-shader-test settings-test`.
@@ -383,7 +383,7 @@ OpenSSL, zlib и miniupnpc (`shell.nix`), входит в AppImage. Включа
 
 ## Благодарности и лицензии
 
-bbport распространяется по **GNU GPL v2 или новее** ([LICENSE](LICENSE)) — в нём код shadPS4
+bbport распространяется по **GNU GPL v2 или новее** ([LICENSE](../../LICENSE)) — в нём код shadPS4
 (GPL-2.0-or-later). Сторонние компоненты сохраняют свои лицензии:
 видеоядро и рекомпилятор шейдеров [shadPS4](https://github.com/shadps4-emu/shadPS4) (GPL-2.0+),
 [sirit](https://github.com/shadps4-emu/sirit), [half](https://half.sourceforge.net/),
