@@ -84,6 +84,9 @@ echo "Built $PWD/out/bb-probe"
 # GPU check for run.sh (live_resolution=auto) and the launcher's gamepad list (--gamepads).
 "$CC" -std=c11 -O2 -Wall -Wextra -Werror "${includes[@]}" tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities
 if [[ ${1:-} == --test ]]; then
+    ninja -C out/gpu shader-meta-test fill-clear-test > /dev/null
+    out/gpu/fill-clear-test
+    LD_LIBRARY_PATH=out/gpu out/gpu/shader-meta-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_local_udp.c -o out/local-udp-test
     out/local-udp-test
     python3 tests/test_image_base.py out/bb-probe
