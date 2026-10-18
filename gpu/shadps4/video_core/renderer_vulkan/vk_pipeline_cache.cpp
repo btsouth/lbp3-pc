@@ -18,6 +18,7 @@
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "core/debug_state.h"
+#include "core/libraries/gnmdriver/host_stall.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/info.h"
@@ -461,6 +462,8 @@ double ProfileSeconds() {
 struct CompileTimer {
     const char* what = nullptr; // a pipeline: reported with its hash when profiled or slow
     u64 hash = 0;
+    // The GPU waits for it: games' flip watchdogs skip it (sceGnmDriverCaptureInProgress).
+    Libraries::GnmDriver::HostStall::Scope stall{};
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     ~CompileTimer() {
         const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -640,9 +643,18 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             const GraphicsPipeline::Deferral deferral{
                 .submit =
                     [this, queued, pipeline_hash](std::function<void()> job) {
+                        // The recorder waits for it in order: a stall until it is built.
+                        Libraries::GnmDriver::HostStall::Begin();
                         compiler->Submit([job = std::move(job), queued, pipeline_hash] {
                             const auto start = std::chrono::steady_clock::now();
-                            job();
+                            {
+                                struct EndStall {
+                                    ~EndStall() {
+                                        Libraries::GnmDriver::HostStall::End();
+                                    }
+                                } end_stall;
+                                job();
+                            }
                             const auto end = std::chrono::steady_clock::now();
                             const auto ms = [](auto a, auto b) {
                                 return std::chrono::duration<double, std::milli>(b - a).count();
