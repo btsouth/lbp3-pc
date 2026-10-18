@@ -57,6 +57,13 @@ struct Profile {
     std::uint64_t buffer_copy_shader = 0;
     /// The game's own TAA, for the scene upscaler; nullptr = none known.
     const SceneAa* scene_aa = nullptr;
+    /// Guest GPU memory the game's CPU code rewrites all the time (a vertex ring): with hot
+    /// pages (BB_HOT_PAGES=1) only pages in these ranges stay writable, from their first write
+    /// fault. Elsewhere hot pages also took in images the CPU fills and pages the GPU writes back.
+    std::span<const CodeRange> streamed_memory;
+    /// The pixel shader (GCN program hash) of the full-screen pass that blends the game's motion
+    /// blur over the scene: left out when the Motion blur effect is off; 0 = none known.
+    std::uint64_t motion_blur_ps = 0;
 };
 
 /// Chooses the profile for the game by its TITLE_ID (bbgpu_init). BB_GAME_PROFILE=none runs the
@@ -72,6 +79,12 @@ inline std::uint64_t BufferCopyShader() {
     return profile ? profile->buffer_copy_shader : 0;
 }
 
+/// The active profile's motion blur pass (pixel shader hash), or 0.
+inline std::uint64_t MotionBlurShader() {
+    const Profile* profile = Active();
+    return profile ? profile->motion_blur_ps : 0;
+}
+
 /// The active profile's TAA description, or nullptr.
 inline const SceneAa* ActiveSceneAa() {
     const Profile* profile = Active();
@@ -80,5 +93,9 @@ inline const SceneAa* ActiveSceneAa() {
 
 /// Whether guest_rip is in code the active profile knows to write per-frame data.
 bool IsDynamicWriter(std::uint64_t guest_rip);
+
+/// Whether the active profile names streamed memory, and whether `address` is in it.
+bool HasStreamedMemory();
+bool InStreamedMemory(std::uint64_t address);
 
 } // namespace Game

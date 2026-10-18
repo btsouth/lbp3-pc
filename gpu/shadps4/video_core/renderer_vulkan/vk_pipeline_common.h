@@ -7,6 +7,9 @@
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <boost/container/small_vector.hpp>
 
 namespace Shader {
@@ -15,6 +18,11 @@ struct PushData;
 } // namespace Shader
 
 namespace Vulkan {
+
+/// bbport: time a thread that makes the game's frames waited for a shader or pipeline compile
+/// (on the GPU thread, or a recorder waiting for a pipeline built on a worker); never reset.
+extern std::atomic<u64> g_bb_compile_stall_ns;
+
 
 static constexpr auto AllGraphicsStageBits =
     vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eTessellationControl |
@@ -32,8 +40,18 @@ public:
              bool is_compute = false);
     virtual ~Pipeline();
 
-    vk::Pipeline Handle() const noexcept {
+    /// bbport: a pipeline whose driver compile was deferred to a worker (graphics pipelines
+    /// made on the GPU thread) is waited for here, by whoever binds it first: the recording
+    /// thread, so the GPU thread goes on to the next draws and their pipelines meanwhile.
+    vk::Pipeline Handle() const {
+        if (handle_pending.load(std::memory_order_acquire)) {
+            WaitHandle();
+        }
         return *pipeline;
+    }
+
+    bool IsHandlePending() const noexcept {
+        return handle_pending.load(std::memory_order_acquire);
     }
 
     vk::PipelineLayout GetLayout() const noexcept {
@@ -67,6 +85,10 @@ public:
 protected:
     [[nodiscard]] std::string GetDebugString() const;
 
+    void WaitHandle() const;
+    /// Called by the worker once `pipeline` is set.
+    void PublishHandle();
+
     const Instance& instance;
     Scheduler& scheduler;
     DescriptorHeap& desc_heap;
@@ -77,6 +99,9 @@ protected:
     std::array<const Shader::Info*, Shader::MaxStageTypes> stages{};
     bool uses_push_descriptors{};
     bool is_compute;
+    std::atomic<bool> handle_pending{false};
+    mutable std::mutex handle_mutex;
+    mutable std::condition_variable handle_cv;
 };
 
 } // namespace Vulkan

@@ -49,4 +49,16 @@ bool IsDynamicWriter(std::uint64_t guest_rip) {
            });
 }
 
+bool HasStreamedMemory() {
+    const Profile* profile = Active();
+    return profile && !profile->streamed_memory.empty();
+}
+
+bool InStreamedMemory(std::uint64_t address) {
+    const Profile* profile = Active();
+    return profile && std::ranges::any_of(profile->streamed_memory, [&](const CodeRange& r) {
+               return address >= r.begin && address < r.end;
+           });
+}
+
 } // namespace Game

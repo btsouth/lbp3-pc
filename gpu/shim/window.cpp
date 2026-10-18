@@ -70,6 +70,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
     const char* fullscreen = std::getenv("BB_FULLSCREEN");
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, fullscreen && fullscreen[0] == '1');
+    // bbport: a buffer of the display's pixels. On a scaled desktop (Hyprland at 1.25 on a
+    // 2560x1440 screen) the swapchain was the logical size (2048x1152) and the compositor
+    // stretched every frame once more. BB_HIGH_DPI=0: as before.
+    const char* high_dpi = std::getenv("BB_HIGH_DPI");
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN,
+                           !(high_dpi && high_dpi[0] == '0'));
     base_title = title;
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
@@ -93,6 +99,8 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     width = w;
     height = h;
     LOG_INFO(Frontend, "Window {}x{} on {}", w, h, driver);
+    std::printf("Window: %dx%d pixels (pixel density %.2f)\n", w, h,
+                SDL_GetWindowPixelDensity(window));
 }
 
 WindowSDL::~WindowSDL() {

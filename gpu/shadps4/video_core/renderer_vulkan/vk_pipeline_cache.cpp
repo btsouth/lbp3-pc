@@ -14,6 +14,9 @@
 #include <thread>
 #include <unordered_set>
 
+#include <xxhash.h>
+
+#include "common/elf_info.h"
 #include "common/hash.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
@@ -359,12 +362,122 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         // The game's buffer copy shader, from its profile (games/).
         .buffer_copy_shader_hash = Game::BufferCopyShader(),
     };
+    OpenDriverCache();
     WarmUp();
+    StartDriverCacheSaver();
+}
 
-    auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
-    ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
-               vk::to_string(cache_result));
-    pipeline_cache = std::move(cache);
+namespace {
+/// bbport: the driver's pipeline cache on disk, beside the shader cache: a header (magic,
+/// version, size, hash of the data) and vkGetPipelineCacheData's bytes.
+struct DriverCacheHeader {
+    u32 magic = 0x43564242; // "BBVC"
+    u32 version = 1;
+    u64 size = 0;
+    u64 hash = 0;
+};
+
+std::filesystem::path DriverCachePath() {
+    const auto serial = Common::ElfInfo::Instance().GameSerial();
+    return Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
+           (serial.empty() ? std::string_view{"unknown"} : serial) / "vulkan_pipeline_cache.bin";
+}
+
+bool DriverCacheEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_DRIVER_PIPELINE_CACHE");
+        return EmulatorSettings.IsPipelineCacheEnabled() && !(env && env[0] == '0');
+    }();
+    return enabled;
+}
+} // namespace
+
+void PipelineCache::OpenDriverCache() {
+    // The driver checks the data's own header (vendor, device, driver UUID) and starts empty
+    // when it does not match; the hash catches a file cut short.
+    std::vector<u8> data;
+    if (DriverCacheEnabled()) {
+        if (FILE* f = std::fopen(DriverCachePath().c_str(), "rb")) {
+            DriverCacheHeader header{};
+            if (std::fread(&header, sizeof(header), 1, f) == 1 &&
+                header.magic == DriverCacheHeader{}.magic &&
+                header.version == DriverCacheHeader{}.version && header.size < (1ull << 31)) {
+                data.resize(header.size);
+                if (std::fread(data.data(), 1, data.size(), f) != data.size() ||
+                    XXH3_64bits(data.data(), data.size()) != header.hash) {
+                    data.clear();
+                }
+            }
+            std::fclose(f);
+        }
+    }
+    auto created = instance.GetDevice().createPipelineCacheUnique(
+        vk::PipelineCacheCreateInfo{.initialDataSize = data.size(), .pInitialData = data.data()});
+    if (created.result != vk::Result::eSuccess && !data.empty()) {
+        data.clear();
+        created = instance.GetDevice().createPipelineCacheUnique(vk::PipelineCacheCreateInfo{});
+    }
+    ASSERT_MSG(created.result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
+               vk::to_string(created.result));
+    pipeline_cache = std::move(created.value);
+    if (!DriverCacheEnabled()) {
+        return;
+    }
+    std::printf("GPU: driver pipeline cache %s (%.1f MB)\n",
+                data.empty() ? "starts empty" : "loaded from disk", data.size() / 1e6);
+    driver_cache_saved = data.size();
+}
+
+void PipelineCache::StartDriverCacheSaver() {
+    if (!DriverCacheEnabled()) {
+        return;
+    }
+    if (std::error_code ec; !std::filesystem::exists(DriverCachePath(), ec)) {
+        driver_cache_saved = 0; // the preload cleared an incompatible cache: write it again
+    }
+    // Saved every 30 s when it grew (a session may end without the destructor), and at exit.
+    driver_cache_saver = std::jthread([this](std::stop_token stop) {
+        std::mutex mutex;
+        std::condition_variable_any cv;
+        while (!stop.stop_requested()) {
+            std::unique_lock lk{mutex};
+            cv.wait_for(lk, stop, std::chrono::seconds(30), [] { return false; });
+            SaveDriverCache();
+        }
+    });
+}
+
+void PipelineCache::SaveDriverCache() {
+    const vk::Device device = instance.GetDevice();
+    size_t size = 0;
+    if (device.getPipelineCacheData(*pipeline_cache, &size, nullptr) != vk::Result::eSuccess ||
+        size == 0 || size == driver_cache_saved) {
+        return;
+    }
+    std::vector<u8> data(size);
+    const vk::Result result = device.getPipelineCacheData(*pipeline_cache, &size, data.data());
+    if (result != vk::Result::eSuccess && result != vk::Result::eIncomplete) {
+        return;
+    }
+    data.resize(size);
+    const DriverCacheHeader header{.size = size, .hash = XXH3_64bits(data.data(), size)};
+    const auto path = DriverCachePath();
+    auto tmp = path;
+    tmp += ".tmp";
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) {
+        return;
+    }
+    const bool written = std::fwrite(&header, sizeof(header), 1, f) == 1 &&
+                         std::fwrite(data.data(), 1, size, f) == size;
+    if (std::fclose(f) == 0 && written) {
+        std::filesystem::rename(tmp, path, ec);
+        if (!ec) {
+            driver_cache_saved = size;
+        }
+    }
 }
 
 /// bbport BB_ASYNC_PIPELINES: worker threads creating graphics pipelines (the driver's compile,
@@ -393,6 +506,11 @@ public:
         }
         cv.notify_one();
     }
+    /// Returns once every job submitted so far has finished.
+    void WaitIdle() {
+        std::unique_lock lk{mutex};
+        idle_cv.wait(lk, [&] { return jobs.empty() && running == 0; });
+    }
 
 private:
     void Run() {
@@ -406,12 +524,20 @@ private:
                 }
                 job = std::move(jobs.front());
                 jobs.pop_front();
+                ++running;
             }
             job();
+            {
+                std::scoped_lock lk{mutex};
+                --running;
+            }
+            idle_cv.notify_all();
         }
     }
     std::mutex mutex;
     std::condition_variable cv;
+    std::condition_variable idle_cv;
+    u32 running = 0;
     std::deque<std::function<void()>> jobs;
     std::vector<std::thread> workers;
     bool stop = false;
@@ -426,19 +552,49 @@ struct PipelineCache::PendingPipeline {
     std::array<vk::ShaderModule, MaxShaderStages> modules{};
 };
 
-PipelineCache::~PipelineCache() = default;
+PipelineCache::~PipelineCache() {
+    if (compiler) {
+        compiler->WaitIdle();
+    }
+    if (driver_cache_saver.joinable()) {
+        driver_cache_saver.request_stop(); // its last save sees every pipeline built
+        driver_cache_saver.join();
+    }
+}
 
 // bbport: shader/pipeline compile time on the GPU thread, reported by BB_FRAME_STATS.
 std::atomic<u64> g_bb_compile_ns;
 std::atomic<u32> g_bb_compiles;
+extern std::atomic<u64> g_bb_pipeline_wait_ns; // vk_pipeline_common.cpp: recorder waits
 namespace {
+// bbport BB_SHADER_PROFILE=1: time each translation and pipeline; slow ones always reported.
+bool ShaderProfile() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_SHADER_PROFILE");
+        return env && *env && *env != '0';
+    }();
+    return enabled;
+}
+double ProfileSeconds() {
+    static const auto start = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
 struct CompileTimer {
+    const char* what = nullptr; // a pipeline: reported with its hash when profiled or slow
+    u64 hash = 0;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     ~CompileTimer() {
-        g_bb_compile_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                   std::chrono::steady_clock::now() - start)
-                                   .count());
+        const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - start)
+                               .count());
+        g_bb_compile_ns += ns;
+        g_bb_compile_stall_ns += ns;
         ++g_bb_compiles;
+        if (what && (ShaderProfile() || ns > 50'000'000)) {
+            std::printf("GPU: [%.3f] %s pipeline %016llx on the GPU thread: %.1f ms\n",
+                        ProfileSeconds(), what, (unsigned long long)hash, double(ns) / 1e6);
+            std::fflush(stdout);
+        }
     }
 };
 } // namespace
@@ -556,9 +712,11 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                 // A pass that is not drawn every frame needs it now: the wait is compile time.
                 const auto start = std::chrono::steady_clock::now();
                 job->cv.wait(lk, [&] { return job->done; });
-                g_bb_compile_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                           std::chrono::steady_clock::now() - start)
-                                           .count());
+                const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                       std::chrono::steady_clock::now() - start)
+                                       .count());
+                g_bb_compile_ns += ns;
+                g_bb_compile_stall_ns += ns;
                 ++async_waited;
             }
         }
@@ -566,15 +724,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         return FinishPipeline(sel.graphics_key, *job);
     }
     if (skippable) {
-        if (!compiler) {
-            const char* env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
-            const u32 threads = env && *env ? u32(std::strtoul(env, nullptr, 10))
-                                            : std::clamp(std::thread::hardware_concurrency() / 4, 1u, 4u);
-            compiler = std::make_unique<PipelineCompiler>(std::max(threads, 1u));
-            std::printf("GPU: new pipelines of passes drawn every frame compile on %u threads "
-                        "(BB_ASYNC_PIPELINES=0: on the GPU thread, the game waits)\n",
-                        std::max(threads, 1u));
-        }
+        EnsureCompiler();
         auto job = std::make_shared<PendingPipeline>();
         job->modules = sel.modules;
         pending_graphics.emplace(sel.graphics_key, job);
@@ -600,14 +750,54 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
-        CompileTimer timer;
+        CompileTimer timer{"graphics", pipeline_hash};
 
         GraphicsPipeline::SerializationSupport sdata{};
-        it.value() = std::make_unique<GraphicsPipeline>(
-            instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
-            sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
-
-        RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+        if (DeferredPipelines()) {
+            // bbport: the draw needs this pipeline, but not on the GPU thread: the driver
+            // compiles it on a worker while the GPU thread goes on with the next draws (and their
+            // pipelines, in parallel); the recording thread waits for it in order. A loading
+            // frame with dozens of new pipelines then costs the longest chain, not their sum
+            // (LBP3 stopped itself at its 1 s flip watchdog after ~0.5 s of serial compiles).
+            EnsureCompiler();
+            const auto queued = std::chrono::steady_clock::now();
+            const GraphicsPipeline::Deferral deferral{
+                .submit =
+                    [this, queued, pipeline_hash](std::function<void()> job) {
+                        compiler->Submit([job = std::move(job), queued, pipeline_hash] {
+                            const auto start = std::chrono::steady_clock::now();
+                            job();
+                            const auto end = std::chrono::steady_clock::now();
+                            const auto ms = [](auto a, auto b) {
+                                return std::chrono::duration<double, std::milli>(b - a).count();
+                            };
+                            if (ShaderProfile() || ms(start, end) > 50.0) {
+                                std::printf("GPU: [%.3f] graphics pipeline %016llx built on a "
+                                            "worker: %.1f ms after %.1f ms queued\n",
+                                            ProfileSeconds(), (unsigned long long)pipeline_hash,
+                                            ms(start, end), ms(queued, start));
+                                std::fflush(stdout);
+                            }
+                        });
+                    },
+                .built =
+                    [key = sel.graphics_key, pipeline_hash](
+                        const GraphicsPipeline::SerializationSupport& built) {
+                        auto data = built;
+                        RegisterPipelineData(key, pipeline_hash, data);
+                    },
+            };
+            it.value() = std::make_unique<GraphicsPipeline>(
+                instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache,
+                sel.infos, sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false,
+                &deferral);
+            ++deferred_started;
+        } else {
+            it.value() = std::make_unique<GraphicsPipeline>(
+                instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache,
+                sel.infos, sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
+            RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+        }
         ++num_new_pipelines;
 
         if (EmulatorSettings.IsShaderCollect()) {
@@ -640,6 +830,32 @@ const GraphicsPipeline* PipelineCache::FinishPipeline(const GraphicsPipelineKey&
     return slot.get();
 }
 
+void PipelineCache::EnsureCompiler() {
+    if (compiler) {
+        return;
+    }
+    // Half the hardware threads, 2 to 8: they only work in bursts of new pipelines. LBP3's
+    // first area brings ~300 (13 s of driver compile on Intel ANV, cold): 3 threads missed the
+    // game's 1 s flip watchdog, 8 made it.
+    const char* env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
+    const u32 threads = env && *env ? u32(std::strtoul(env, nullptr, 10))
+                                    : std::clamp(std::thread::hardware_concurrency() / 2, 2u, 8u);
+    compiler = std::make_unique<PipelineCompiler>(std::max(threads, 1u));
+    std::printf("GPU: new graphics pipelines compile on %u threads (BB_ASYNC_PIPELINES=0: on the "
+                "GPU thread, the game waits)\n",
+                std::max(threads, 1u));
+}
+
+bool PipelineCache::DeferredPipelines() {
+    // BB_ASYNC_PIPELINES=0 also turns this off (every pipeline built on the GPU thread).
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_ASYNC_PIPELINES");
+        const char* deferred = std::getenv("BB_DEFERRED_PIPELINES");
+        return !(env && env[0] == '0') && !(deferred && deferred[0] == '0');
+    }();
+    return enabled;
+}
+
 bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indirect) {
     // Only a pass drawn every frame may go without a draw for a frame or two (its render target
     // drawn to in each of the last frames, below). A one-time render compiles at once, as during
@@ -663,13 +879,15 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
         frame_seen = frame;
         static u32 printed = 0;
         const u32 second = BbStats::coarse_second.load(std::memory_order_relaxed);
-        if (async_started != 0 && second - printed >= 5) {
+        if ((async_started != 0 || deferred_started != 0) && second - printed >= 5) {
             printed = second;
             std::printf("GPU: %llu pipelines compiled in the background, %llu draws went without "
-                        "theirs meanwhile, %llu waited for one\n",
+                        "theirs meanwhile, %llu waited for one; %llu more built on workers for "
+                        "the recorder, which waited %.1f ms for them\n",
                         (unsigned long long)async_started, (unsigned long long)async_skipped,
-                        (unsigned long long)async_waited);
-            async_started = async_skipped = async_waited = 0;
+                        (unsigned long long)async_waited, (unsigned long long)deferred_started,
+                        double(g_bb_pipeline_wait_ns.exchange(0)) / 1e6);
+            async_started = async_skipped = async_waited = deferred_started = 0;
         }
     }
     if (last_frame_draws < 300) {
@@ -700,7 +918,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}", pipeline_hash);
-        CompileTimer timer;
+        CompileTimer timer{"compute", pipeline_hash};
 
         ComputePipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
@@ -1038,9 +1256,20 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
     CompileTimer timer;
+    const bool shader_profile = ShaderProfile();
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    if (shader_profile) {
+        std::printf("GPU: [%.3f] translating %s shader %016llx%s, %zu dwords\n",
+                    ProfileSeconds(), fmt::format("{}", info.hw_stage).c_str(), (unsigned long long)info.pgm_hash,
+                    perm_idx != 0 ? " (permutation)" : "", code.size());
+        std::fflush(stdout);
+    }
 
     const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
+    const auto t1 = Clock::now();
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    const auto t2 = Clock::now();
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;
@@ -1052,6 +1281,19 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
         module = CompileSPV(*patch, instance.GetDevice());
     } else {
         module = CompileSPV(spv, instance.GetDevice());
+    }
+
+    const auto t3 = Clock::now();
+    const auto ms = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    if (shader_profile || ms(t0, t3) > 50.0) {
+        std::printf("GPU: [%.3f] %s shader %016llx%s, %zu dwords: translate %.1f ms, SPIR-V %.1f ms, "
+                    "module %.1f ms\n",
+                    ProfileSeconds(), fmt::format("{}", info.hw_stage).c_str(), (unsigned long long)info.pgm_hash,
+                    perm_idx != 0 ? " (permutation)" : "", code.size(), ms(t0, t1), ms(t1, t2),
+                    ms(t2, t3));
+        std::fflush(stdout);
     }
 
     RegisterShaderBinary(std::move(spv), info.pgm_hash, perm_idx);
@@ -1175,6 +1417,15 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
 
 std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule module,
                                                              std::span<const u32> spv_code) {
+    // bbport: pipelines built on workers (deferred or async) hold the module until their
+    // vkCreateGraphicsPipelines returns; it must outlive them.
+    if (compiler) {
+        compiler->WaitIdle();
+    }
+    for (auto it = pending_graphics.begin(); it != pending_graphics.end();) {
+        it = std::ranges::contains(it->second->modules, module) ? pending_graphics.erase(it)
+                                                                : std::next(it);
+    }
     std::optional<vk::ShaderModule> new_module{};
     for (const auto& [_, program] : program_cache) {
         for (auto& m : program->modules) {

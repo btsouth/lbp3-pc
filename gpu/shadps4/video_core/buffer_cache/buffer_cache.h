@@ -20,6 +20,7 @@
 #include "common/types.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/fault_manager.h"
+#include "video_core/buffer_cache/preupload_ranges.h"
 #include "video_core/buffer_cache/range_set.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
@@ -471,7 +472,7 @@ private:
     std::deque<Buffer> arenas;
     std::vector<ArenaBinds> pending_binds;
     std::mutex preupload_mutex;               ///< the map hooks come from guest threads
-    std::map<VAddr, VAddr> preupload_ranges; ///< start -> end of pre-uploaded guest memory
+    PreuploadRanges preupload_ranges; ///< start -> end of pre-uploaded guest memory
     VAddr preupload_cursor = 0;
     u64 preupload_first_bytes = 0, preupload_again_bytes = 0; ///< BB_FRAME_STATS report
     Vulkan::Semaphore memory_semaphore;

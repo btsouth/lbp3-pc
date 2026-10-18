@@ -4,10 +4,12 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 
 #include "bbport_toggles.h"
+#include "game_profile.h"
 #include "common/div_ceil.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
@@ -53,6 +55,14 @@ public:
         return cpu_addr;
     }
 
+    /// bbport: the MemoryTracker's bit for this region: set while some page may be CPU-modified
+    /// (or hot), so lock-free checks of large bindings skip clean regions without reading them.
+    void SetSummary(std::atomic<u64>* word, u64 mask) {
+        summary_word = word;
+        summary_mask = mask;
+        NoteCpuBits();
+    }
+
     static constexpr size_t SanitizeAddress(size_t address) {
         return static_cast<size_t>(std::max<s64>(static_cast<s64>(address), 0LL));
     }
@@ -94,6 +104,7 @@ public:
 
         RegionBits& bits = GetRegionBits<type>();
         if constexpr (type == Type::CPU && enable) {
+            NoteCpuBits();
             CountWriteFaults(start_page, end_page);
             last_cpu_write_frame = BbStats::frame_number.load(std::memory_order_relaxed);
             NotePreuploadChurn();
@@ -104,9 +115,19 @@ public:
             bits.UnsetRange(start_page, end_page);
         }
         if constexpr (type == Type::CPU) {
+            if constexpr (!enable) {
+                MaybeClearSummary();
+            }
             UpdateProtection<!enable, false>();
-        } else if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise) {
-            UpdateProtection<enable, true>();
+        } else {
+            if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise) {
+                UpdateProtection<enable, true>();
+            }
+            // bbport: a hot page the GPU writes is protected again, so a guest write to it is
+            // seen (and the GPU's data is not overwritten by an upload of the guest's copy).
+            if (enable && num_hot != 0) {
+                UpdateProtection<true, false>();
+            }
         }
     }
 
@@ -124,6 +145,7 @@ public:
         if (add.None()) {
             return;
         }
+        NoteCpuBits();
         cpu |= add;
         UpdateProtection<false, false>();
     }
@@ -164,6 +186,7 @@ public:
             bits.UnsetRange(start_page, end_page);
             if constexpr (type == Type::CPU) {
                 KeepHotPagesModified(start_page, end_page);
+                MaybeClearSummary();
                 UpdateProtection<true, false>();
             } else if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled) {
                 UpdateProtection<false, true>();
@@ -184,24 +207,24 @@ public:
     /// bbport: every page of the region modified.
     template <Type type>
     [[nodiscard]] bool IsRegionFullyModified(u64 offset, u64 size) noexcept {
-        if constexpr (type == Type::CPU) {
-            RefreshHotPages();
-        }
         const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
         const size_t end_page =
             Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
         if (start_page >= NUM_PAGES_PER_REGION || end_page <= start_page) {
             return true;
         }
-        return GetRegionBits<type>().AllInRange(start_page, std::min<size_t>(end_page, NUM_PAGES_PER_REGION));
+        const size_t last = std::min<size_t>(end_page, NUM_PAGES_PER_REGION);
+        if constexpr (type == Type::CPU) {
+            if (HotRefreshPending()) {
+                return (cpu | (hot & ~gpu)).AllInRange(start_page, last);
+            }
+        }
+        return GetRegionBits<type>().AllInRange(start_page, last);
     }
 
     template <Type type>
     [[nodiscard]] bool IsRegionModified(u64 offset, u64 size) noexcept {
         RENDERER_TRACE;
-        if constexpr (type == Type::CPU) {
-            RefreshHotPages();
-        }
         const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
         const size_t end_page =
             Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
@@ -210,7 +233,15 @@ public:
         }
 
         const RegionBits& bits = GetRegionBits<type>();
-        return bits.AnyInRange(start_page, end_page);
+        if (bits.AnyInRange(start_page, end_page)) {
+            return true;
+        }
+        // bbport: callers may hold no lock here (read-only bindings), so the hot pages are only
+        // looked at; ForEachModifiedRange marks them modified under the lock.
+        if constexpr (type == Type::CPU) {
+            return HotRefreshPending() && (hot & ~gpu).AnyInRange(start_page, end_page);
+        }
+        return false;
     }
 
     /// bbport (pre-upload): whether some page is CPU-modified but not GPU-modified.
@@ -255,7 +286,7 @@ private:
     void UpdateProtection() {
         RENDERER_TRACE;
         // bbport: hot pages stay writable whether or not they are marked modified.
-        const RegionBits writable_target = num_hot ? (cpu | hot) : cpu;
+        const RegionBits writable_target = num_hot ? (cpu | (hot & ~gpu)) : cpu;
         RegionBits mask = is_read ? (~gpu ^ readable) : (writable_target ^ writeable);
         if (mask.None()) {
             return;
@@ -290,6 +321,7 @@ private:
 
     void CountWriteFaults(size_t start_page, size_t end_page) {
         const bool hot_enabled = HotPagesEnabled();
+        static const bool streamed_only = Game::HasStreamedMemory();
         for (size_t page = start_page; page < end_page; ++page) {
             if (writeable.Get(page)) {
                 continue; // not protected: no fault
@@ -298,7 +330,12 @@ private:
             if (!hot_enabled) {
                 continue;
             }
-            if (write_faults[page] < HotFaults) {
+            // With streamed memory named by the game's profile, only pages there, at once.
+            if (streamed_only) {
+                if (!Game::InStreamedMemory(cpu_addr + page * TRACKER_BYTES_PER_PAGE)) {
+                    continue;
+                }
+            } else if (write_faults[page] < HotFaults) {
                 ++write_faults[page];
                 continue;
             }
@@ -315,6 +352,7 @@ private:
 
     /// A new guest submission since the hot pages were last marked: they may have been written
     /// (they are writable), so they count as modified until uploaded again.
+    /// Called with the lock held: a fault handler sets bits of `cpu` under it too.
     void RefreshHotPages() {
         if (num_hot == 0) {
             return;
@@ -324,7 +362,14 @@ private:
             return;
         }
         hot_epoch = epoch;
-        cpu |= hot;
+        // Not the pages the GPU wrote since: an upload of the guest's copy would overwrite the
+        // GPU's data (Ratchet & Clank's skinning output in its geometry ring).
+        NoteCpuBits();
+        cpu |= hot & ~gpu;
+    }
+
+    [[nodiscard]] bool HotRefreshPending() const noexcept {
+        return num_hot != 0 && BbStats::upload_epoch.load(std::memory_order_relaxed) != hot_epoch;
     }
 
     void KeepHotPagesModified(size_t start_page, size_t end_page) {
@@ -337,7 +382,8 @@ private:
             std::chrono::steady_clock::now() - hot_since > HotPeriod) {
             // Writes since their last upload were not tracked: modified, so the next use uploads
             // them and protects them again. Counting starts again.
-            cpu |= hot;
+            NoteCpuBits();
+            cpu |= hot & ~gpu;
             BbStats::hot_pages.fetch_sub(num_hot, std::memory_order_relaxed);
             hot.Clear();
             write_faults.fill(0);
@@ -345,6 +391,22 @@ private:
         }
     }
 
+    /// Set before CPU bits are (with the lock held), so a lock-free reader that sees it clear
+    /// sees no CPU-modified page.
+    void NoteCpuBits() noexcept {
+        if (summary_word && !(summary_word->load(std::memory_order_relaxed) & summary_mask)) {
+            summary_word->fetch_or(summary_mask, std::memory_order_release);
+        }
+    }
+    /// With the lock held, after CPU bits were cleared.
+    void MaybeClearSummary() noexcept {
+        if (summary_word && num_hot == 0 && cpu.None()) {
+            summary_word->fetch_and(~summary_mask, std::memory_order_release);
+        }
+    }
+
+    std::atomic<u64>* summary_word = nullptr;
+    u64 summary_mask = 0;
     std::array<u8, NUM_PAGES_PER_REGION> write_faults{};
     RegionBits hot{};
     u32 num_hot = 0;

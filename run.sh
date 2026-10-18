@@ -131,6 +131,12 @@ if [[ -z ${BB_VBLANK_HZ:-} ]]; then
     fi
     case $fps in uncap|120) export BB_VBLANK_HZ=$rac_hz ;; 90) export BB_VBLANK_HZ=90 ;; *) export BB_VBLANK_HZ=60 ;; esac
 fi
+# Ratchet & Clank renders at 1920x1080 (its targets sit at fixed addresses; no resolution patch):
+# on a larger screen the presenter scales the finished frame with FSR 1 (edge-adaptive upscale
+# and sharpening) instead of a bilinear stretch. BB_FSR1=0: bilinear.
+if [[ -z ${BB_FSR1:-} && -f $out/analysis.json ]] && [[ $("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["sfo"].get("TITLE_ID", ""))' "$out/analysis.json") == CUSA01073 ]]; then
+    export BB_FSR1=1
+fi
 # Ratchet & Clank paces itself for flips on vblank ticks of the preset's rate (60 at 60 Hz); at
 # any other rate (240 Hz: flips at once) the preset is paced by the port's limiter instead.
 if [[ -z ${BB_FPS_LIMIT:-} ]]; then
