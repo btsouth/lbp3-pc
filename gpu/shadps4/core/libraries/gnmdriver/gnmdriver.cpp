@@ -17,7 +17,6 @@
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
-#include "core/libraries/gnmdriver/host_stall.h"
 #include "core/libraries/videoout/flip_trace.h"
 #include "core/libraries/videoout/video_out.h"
 #include "core/memory.h"
@@ -963,9 +962,8 @@ int PS4_SYSV_ABI sceGnmDrawOpaqueAuto() {
 
 bool PS4_SYSV_ABI sceGnmDriverCaptureInProgress() {
     LOG_TRACE(Lib_GnmDriver, "called");
-    // Retail firmware has no captures. bbport: the GPU held up by pipeline compiles reads as
-    // one, so games' flip watchdogs do not count it (host_stall.h).
-    return HostStall::Recent();
+    // Not available in retail firmware
+    return false;
 }
 
 u32 PS4_SYSV_ABI sceGnmDriverInternalRetrieveGnmInterface() {
