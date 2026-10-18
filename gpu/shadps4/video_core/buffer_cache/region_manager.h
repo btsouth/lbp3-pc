@@ -105,8 +105,15 @@ public:
         }
         if constexpr (type == Type::CPU) {
             UpdateProtection<!enable, false>();
-        } else if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise) {
-            UpdateProtection<enable, true>();
+        } else {
+            if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise) {
+                UpdateProtection<enable, true>();
+            }
+            // bbport: a hot page the GPU writes is protected again, so a guest write to it is
+            // seen (and the GPU's data is not overwritten by an upload of the guest's copy).
+            if (enable && num_hot != 0) {
+                UpdateProtection<true, false>();
+            }
         }
     }
 
@@ -193,7 +200,7 @@ public:
         const size_t last = std::min<size_t>(end_page, NUM_PAGES_PER_REGION);
         if constexpr (type == Type::CPU) {
             if (HotRefreshPending()) {
-                return (cpu | hot).AllInRange(start_page, last);
+                return (cpu | (hot & ~gpu)).AllInRange(start_page, last);
             }
         }
         return GetRegionBits<type>().AllInRange(start_page, last);
@@ -216,7 +223,7 @@ public:
         // bbport: callers may hold no lock here (read-only bindings), so the hot pages are only
         // looked at; ForEachModifiedRange marks them modified under the lock.
         if constexpr (type == Type::CPU) {
-            return HotRefreshPending() && hot.AnyInRange(start_page, end_page);
+            return HotRefreshPending() && (hot & ~gpu).AnyInRange(start_page, end_page);
         }
         return false;
     }
@@ -263,7 +270,7 @@ private:
     void UpdateProtection() {
         RENDERER_TRACE;
         // bbport: hot pages stay writable whether or not they are marked modified.
-        const RegionBits writable_target = num_hot ? (cpu | hot) : cpu;
+        const RegionBits writable_target = num_hot ? (cpu | (hot & ~gpu)) : cpu;
         RegionBits mask = is_read ? (~gpu ^ readable) : (writable_target ^ writeable);
         if (mask.None()) {
             return;
@@ -333,7 +340,9 @@ private:
             return;
         }
         hot_epoch = epoch;
-        cpu |= hot;
+        // Not the pages the GPU wrote since: an upload of the guest's copy would overwrite the
+        // GPU's data (Ratchet & Clank's skinning output in its geometry ring).
+        cpu |= hot & ~gpu;
     }
 
     [[nodiscard]] bool HotRefreshPending() const noexcept {
@@ -350,7 +359,7 @@ private:
             std::chrono::steady_clock::now() - hot_since > HotPeriod) {
             // Writes since their last upload were not tracked: modified, so the next use uploads
             // them and protects them again. Counting starts again.
-            cpu |= hot;
+            cpu |= hot & ~gpu;
             BbStats::hot_pages.fetch_sub(num_hot, std::memory_order_relaxed);
             hot.Clear();
             write_faults.fill(0);

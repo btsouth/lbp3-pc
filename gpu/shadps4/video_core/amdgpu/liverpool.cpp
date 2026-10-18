@@ -2176,6 +2176,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     }
                     YIELD_GFX();
                 }
+                // bbport: the guest may have written memory for the draws after this wait
+                // (BB_HOT_PAGES: hot pages count as modified again).
+                BbStats::upload_epoch.fetch_add(1, std::memory_order_relaxed);
                 if (dcb_stats) {
                     ++g_dcb_stats.wait_outcome[met ? 2 : 3];
                     g_dcb_stats.wait_ms += std::chrono::duration<double, std::milli>(
@@ -2577,6 +2580,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 }
                 YIELD_ASC(vqid);
             }
+            BbStats::upload_epoch.fetch_add(1, std::memory_order_relaxed); // as on the gfx queue
             break;
         }
         case PM4ItOpcode::ReleaseMem: {
