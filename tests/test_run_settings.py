@@ -161,3 +161,100 @@ class RatchetPacingTests(unittest.TestCase):
     def test_explicit_frame_limit_wins(self):
         self.assertEqual(self.launch(BB_FPS='60', BB_VBLANK_HZ='240', BB_FPS_LIMIT='50'),
                          {'BB_VBLANK_HZ': '240', 'BB_FPS_LIMIT': '50'})
+
+
+RATCHET_KEYS = ('BB_FPS_LIMIT', 'BB_VBLANK_HZ', 'BB_HINTLESS_BASE', 'BB_STUB_IMPORTS',
+                'BB_CREATE_YIELD_US', 'BB_CREATE_YIELD_ALL', 'BB_READBACK_LINEAR',
+                'BB_READBACK_LINEAR_ASYNC', 'BB_GAME_AA', 'BB_PC_MODEL', 'BB_UPSCALER',
+                'BB_RENDER_RES', 'BB_OUTPUT_RES')
+
+
+class RatchetDefaultTests(unittest.TestCase):
+    """Ratchet & Clank runs with no variables set: run.sh picks its settings by TITLE_ID."""
+
+    def launch(self, title='CUSA01073', ini='', vendor=None, **extra):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            out = data / 'out'
+            out.mkdir()
+            (out / 'analysis.json').write_text(json.dumps({'sfo': {'TITLE_ID': title}}))
+            elf = bytearray(120)
+            struct.pack_into('<Q', elf, 0x20, 64)
+            struct.pack_into('<HH', elf, 0x36, 56, 1)
+            struct.pack_into('<IIQQQQQQ', elf, 64, 1, 0, 0, 0, 0, 0, 0x6000000, 0)
+            (out / 'eboot.elf').write_bytes(elf)
+            (data / 'eboot.bin').touch()
+            config = data / 'bbport.ini'
+            config.write_text(ini)
+            caps = data / 'bb-gpu-capabilities'  # next to the probe, as run.sh looks for it
+            caps.write_text('#!/bin/sh\n' + (f'[ "$1" = --device ] && printf "{vendor}\\tTest GPU\\n"\n'
+                                              if vendor else 'exit 1\n'))
+            caps.chmod(0o755)
+            python = data / 'python'
+            python.write_text(f'#!{sys.executable}\n' +
+                'import subprocess, sys\n'
+                'if sys.argv[1] in ("scripts/patches.py", "scripts/mods.py", "-c"):\n'
+                '    sys.exit(subprocess.call([sys.executable, *sys.argv[1:]]))\n')
+            python.chmod(0o755)
+            probe = data / 'probe'
+            probe.write_text(f'#!{sys.executable}\n' +
+                'import json, os, sys\n'
+                'from pathlib import Path\n'
+                f'keys = {RATCHET_KEYS!r}\n'
+                'Path(os.environ["BB_CONFIG"]).with_name("environment").write_text(json.dumps('
+                '{key: os.environ.get(key) for key in keys}))\n')
+            probe.chmod(0o755)
+            env = dict(os.environ, BB_PREBUILT='1', BB_PROBE=str(probe), PYTHON=str(python),
+                       BB_DATA_DIR=str(data), BB_CONFIG=str(config), BB_GAME_DIR=str(data))
+            for key in RATCHET_KEYS + ('BB_FPS', 'BB_LIVE_RES', 'BB_AUTO_RENDER_RES'):
+                env.pop(key, None)
+            env.update(extra)
+            subprocess.run([shutil.which('bash'), 'run.sh'], cwd=ROOT, env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=30)
+            return json.loads((data / 'environment').read_text())
+
+    def test_required_settings_without_variables(self):
+        env = self.launch()
+        self.assertEqual({key: env[key] for key in RATCHET_KEYS[2:10]}, {
+            'BB_HINTLESS_BASE': '0x7000000000', 'BB_STUB_IMPORTS': '1',
+            'BB_CREATE_YIELD_US': '2000', 'BB_CREATE_YIELD_ALL': '1', 'BB_READBACK_LINEAR': '1',
+            'BB_READBACK_LINEAR_ASYNC': '1', 'BB_GAME_AA': '1', 'BB_PC_MODEL': '0'})
+
+    def test_default_preset_is_60(self):
+        env = self.launch()
+        self.assertEqual((env['BB_VBLANK_HZ'], env['BB_FPS_LIMIT']), ('60', None))
+
+    def test_presets(self):
+        env = self.launch(BB_FPS='120')
+        self.assertEqual((env['BB_VBLANK_HZ'], env['BB_FPS_LIMIT']), ('240', '120'))
+        env = self.launch(BB_FPS='uncap')
+        self.assertEqual((env['BB_VBLANK_HZ'], env['BB_FPS_LIMIT']), ('240', None))
+
+    def test_explicit_values_win(self):
+        env = self.launch(BB_READBACK_LINEAR_ASYNC='0', BB_GAME_AA='0', BB_PC_MODEL='1',
+                          BB_HINTLESS_BASE='0x6000000000')
+        self.assertEqual((env['BB_READBACK_LINEAR_ASYNC'], env['BB_GAME_AA'], env['BB_PC_MODEL'],
+                          env['BB_HINTLESS_BASE']), ('0', '0', '1', '0x6000000000'))
+
+    def test_upscaler_by_gpu(self):
+        self.assertEqual(self.launch(vendor='0x10de')['BB_UPSCALER'], 'dlss')
+        self.assertEqual(self.launch(vendor='0x1002')['BB_UPSCALER'], 'fsr3')
+        self.assertEqual(self.launch(vendor='0x8086')['BB_UPSCALER'], 'fsr3')
+        self.assertEqual(self.launch()['BB_UPSCALER'], 'fsr3')  # GPU unknown
+
+    def test_upscaler_from_settings_or_variable_wins(self):
+        self.assertIsNone(self.launch(vendor='0x10de', ini='upscaler=off\n')['BB_UPSCALER'])
+        self.assertEqual(self.launch(vendor='0x10de', BB_UPSCALER='fsr3')['BB_UPSCALER'], 'fsr3')
+
+    def test_output_resolution_is_not_patched(self):
+        env = self.launch(ini='upscaler=fsr3\npreset=1\noutput_res=2560x1440\n')
+        self.assertEqual((env['BB_RENDER_RES'], env['BB_OUTPUT_RES']), (None, None))
+
+    def test_bloodborne_gets_none_of_them(self):
+        env = self.launch(title='CUSA03173', vendor='0x10de', BB_FPS='60')
+        for key in RATCHET_KEYS[2:9] + ('BB_UPSCALER',):
+            self.assertIsNone(env[key], key)
+        self.assertEqual(env['BB_PC_MODEL'], '0')  # its own choice by GPU: the 0.3 model off AMD
+        self.assertEqual(env['BB_VBLANK_HZ'], '60')
+        env = self.launch(title='CUSA03173', vendor='0x1002')
+        self.assertEqual((env['BB_PC_MODEL'], env['BB_VBLANK_HZ']), ('1', '480'))

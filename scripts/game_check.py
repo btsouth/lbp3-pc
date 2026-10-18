@@ -31,6 +31,15 @@ SUPPORTED_IMAGE = '071df19c8880086d97182dbc057bc8cb37badaca57d9112683836b24a0444
 LANCE_60FPS_IMAGE = 'bbc91f4dff6bc3118b039464289e39878a8fdfc802a07fab9d5fe84d935a676f'
 # The game loads these first; a broken extraction damages most files, these among them.
 CHECKED_FOLDER = 'dvdroot_ps4/shader'
+# Ratchet & Clank (2016): the European release CUSA01073, version 1.00 without updates. The port's
+# hooks and patches (patches.py, gpu/games/ratchet.cpp) use the addresses of this executable.
+# The US release CUSA01047 has not been tried; it starts with a warning.
+RATCHET_TITLE = 'CUSA01073'
+RATCHET_UNTESTED_TITLES = ('CUSA01047',)
+RATCHET_VERSION = '01.00'
+RATCHET_IMAGE = 'bc8bdc1c984a5544aa65417bccccd7667ce0f8718e9b07037b0566631dabe592'
+# Kinds that only warn: the game still starts.
+WARNINGS = ('ratchet_untested', 'ratchet_image')
 
 
 def image_sha256(game):
@@ -77,6 +86,8 @@ def problem(game, image_hash=None):
     except (OSError, ValueError, IndexError):
         info = {}
     title, version = info.get('TITLE_ID', '?'), info.get('APP_VER', '?')
+    if title == RATCHET_TITLE or title in RATCHET_UNTESTED_TITLES:
+        return ratchet_problem(game, title, version, image_hash)
     try:
         image_hash = image_hash or image_sha256(game)
         if image_hash == SUPPORTED_IMAGE:
@@ -90,6 +101,23 @@ def problem(game, image_hash=None):
     if version != SUPPORTED_VERSION:
         return 'missing_update', title, version
     return 'wrong_eboot', title, version
+
+
+def ratchet_problem(game, title, version, image_hash=None):
+    """problem() for Ratchet & Clank: None for CUSA01073 1.00, else (kind, title, version) with kind
+    'ratchet_version' (another version: an update was merged in), 'ratchet_untested' (the US
+    release), 'ratchet_image' (1.00 by param.sfo, but another executable) or 'unreadable'."""
+    if title == RATCHET_TITLE and version != RATCHET_VERSION:
+        return 'ratchet_version', title, version
+    try:
+        image_hash = image_hash or image_sha256(game)
+    except (OSError, ValueError, IndexError, StopIteration, KeyError):
+        return 'unreadable', title, version
+    if image_hash == RATCHET_IMAGE:
+        return None
+    if title in RATCHET_UNTESTED_TITLES:
+        return 'ratchet_untested', title, version
+    return 'ratchet_image', title, version
 
 
 def explain(kind, title, version):
@@ -114,6 +142,13 @@ def explain(kind, title, version):
                          'tool left parts of compressed sectors stale (LibOrbisPkg PkgTool on '
                          '.NET 6 or newer, issue #81): extract the game and the 1.09 update again '
                          'with a fixed tool. scripts/game_check.py GAME_DIR checks every file.',
+        'ratchet_version': f'{found} The Ratchet & Clank port runs version 01.00 of the European '
+                           'release (CUSA01073) without updates. Dump the base game again and do '
+                           'not merge an update into it.',
+        'ratchet_untested': f'{found} This release has not been tested; the port is made for the '
+                            'European release CUSA01073 1.00. It may fail to start or crash.',
+        'ratchet_image': f'{found} This eboot.bin is not the one the port was made for (CUSA01073 '
+                         '1.00). It may fail to start or crash; a clean dump of the base game helps.',
     }[kind]
 
 
