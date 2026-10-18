@@ -31,6 +31,13 @@ SUPPORTED_IMAGE = '071df19c8880086d97182dbc057bc8cb37badaca57d9112683836b24a0444
 LANCE_60FPS_IMAGE = 'bbc91f4dff6bc3118b039464289e39878a8fdfc802a07fab9d5fe84d935a676f'
 # The game loads these first; a broken extraction damages most files, these among them.
 CHECKED_FOLDER = 'dvdroot_ps4/shader'
+# LittleBigPlanet 3: the European release CUSA00063, version 1.00 without updates, the only one
+# tried. Another executable under that title (an update merged in) starts with a warning; other
+# releases need BB_SKIP_GAME_CHECK=1 and the LittleBigPlanet 3 settings of run.sh set by hand.
+LBP3_TITLE = 'CUSA00063'
+LBP3_IMAGE = 'b8052345a0f49e11d65fa57e11b0f66f3308ff6ab1c63e394c64eee640ae3161'
+# Kinds that only warn: the game still starts.
+WARNINGS = ('lbp3_untested',)
 
 
 def image_sha256(game):
@@ -77,6 +84,12 @@ def problem(game, image_hash=None):
     except (OSError, ValueError, IndexError):
         info = {}
     title, version = info.get('TITLE_ID', '?'), info.get('APP_VER', '?')
+    if title == LBP3_TITLE:
+        try:
+            image_hash = image_hash or image_sha256(game)
+        except (OSError, ValueError, IndexError, StopIteration, KeyError):
+            return 'unreadable', title, version
+        return None if image_hash == LBP3_IMAGE else ('lbp3_untested', title, version)
     try:
         image_hash = image_hash or image_sha256(game)
         if image_hash == SUPPORTED_IMAGE:
@@ -114,6 +127,9 @@ def explain(kind, title, version):
                          'tool left parts of compressed sectors stale (LibOrbisPkg PkgTool on '
                          '.NET 6 or newer, issue #81): extract the game and the 1.09 update again '
                          'with a fixed tool. scripts/game_check.py GAME_DIR checks every file.',
+        'lbp3_untested': f'{found} This executable of LittleBigPlanet 3 has not been tested; '
+                         'the port is made for the European release CUSA00063 1.00 without '
+                         'updates. It may fail to start or crash.',
     }[kind]
 
 
