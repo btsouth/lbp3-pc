@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <deque>
 #include <mutex>
 #include <type_traits>
@@ -14,6 +15,7 @@
 #include "common/types.h"
 #include "core/emulator_settings.h"
 #include "video_core/buffer_cache/region_manager.h"
+#include "video_core/buffer_cache/region_summary.h"
 
 namespace VideoCore {
 
@@ -27,8 +29,27 @@ public:
     explicit MemoryTracker(PageManager& tracker_) : tracker{&tracker_} {}
     ~MemoryTracker() = default;
 
+    /// bbport: whether some 4 MiB region of the range may hold CPU-modified pages, from one bit
+    /// per region. Ratchet & Clank binds MiBs per draw (its geometry ring; 12, 22 and 800 MiB
+    /// ranges in frame captures): read region by region, the check was up to ~8% of the draw
+    /// recording thread.
+    bool MaybeCpuModified(VAddr query_cpu_addr, u64 query_size) const noexcept {
+        if (query_size == 0) {
+            return false;
+        }
+        if (BbToggle::Experiment(2)) {
+            return true; // experiment bit 2: every region looked at, as before (A/B)
+        }
+        return cpu_summary.Any(query_cpu_addr >> TRACKER_HIGHER_PAGE_BITS,
+                               (query_cpu_addr + query_size - 1) >> TRACKER_HIGHER_PAGE_BITS);
+    }
+
     /// Returns true if a region has been modified from the CPU
     bool IsRegionCpuModified(VAddr query_cpu_addr, u64 query_size) noexcept {
+        if (!BbToggle::Disabled(BbToggle::LockFreeUploadCheck) &&
+            !MaybeCpuModified(query_cpu_addr, query_size)) {
+            return false;
+        }
         return IteratePages<true>(
             query_cpu_addr, query_size, [](RegionManager* manager, u64 offset, size_t size) {
                 return manager->template IsRegionModified<Type::CPU>(offset, size);
@@ -128,6 +149,11 @@ public:
         // bbport: a write binding over pages the CPU did not change and the GPU already owns
         // needs neither an upload nor a state change (it ran under the region lock for every
         // GPU write binding, twice per page). Racing guest writes are as in the read path.
+        if (!is_written && !BbToggle::Disabled(BbToggle::LockFreeUploadCheck) &&
+            !MaybeCpuModified(query_cpu_range, query_size)) {
+            on_upload();
+            return;
+        }
         if (is_written && !BbToggle::Disabled(BbToggle::LockFreeUploadCheck)) {
             bool settled = true;
             IteratePages<true>(query_cpu_range, query_size,
@@ -241,6 +267,7 @@ private:
         // Each manager tracks a 4_MB virtual address space.
         auto* new_manager = free_managers.back();
         new_manager->SetCpuAddress(base_cpu_addr);
+        new_manager->SetSummary(cpu_summary.Word(page_index), cpu_summary.Mask(page_index));
         free_managers.pop_back();
         top_tier[page_index] = new_manager;
     }
@@ -249,6 +276,7 @@ private:
     std::deque<std::array<RegionManager, MANAGER_POOL_SIZE>> manager_pool;
     std::vector<RegionManager*> free_managers;
     std::array<RegionManager*, NUM_HIGH_PAGES> top_tier{};
+    RegionSummary<NUM_HIGH_PAGES> cpu_summary;
 };
 
 } // namespace VideoCore
