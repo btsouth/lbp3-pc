@@ -177,6 +177,14 @@ static void wall_time(void) {
     assert(get(NULL,NULL)==0 && get(NULL,z.value)==0);
     assert(!runtime_resolve("n88vx3C5nW8#q#q",0));
 }
+static void live_streaming(void) {
+    typedef int32_t (ABI *Enable)(int32_t);
+    typedef int32_t (ABI *Init)(uint64_t);
+    /* Ratchet & Clank: Initialize at boot, EnableLiveStreaming(false) in cutscene levels. */
+    assert(GET(Init,"kvYEw2lBndk#e#f")(0x4000)==0);
+    Enable enable=GET(Enable,"dWM80AX39o4#e#f");
+    assert(enable && enable(0)==0 && enable(1)==0);
+}
 static void direct_memory(void) {
     Allocate alloc=GET(Allocate,"rTXw65xmLIA#p#J");
     Map map=GET(Map,"L-Q3LEjIbgA#p#J");
@@ -417,7 +425,7 @@ int main(int argc,char **argv) {
     if (argc>1 && !strcmp(argv[1],"--rwlock-lifecycle")) { rw_lifecycle(); return 0; }
     if (argc>1 && !strcmp(argv[1],"--rwlock-concurrency")) { rw_concurrency(); return 0; }
     if (argc>1 && !strcmp(argv[1],"--rwlock-timeouts")) { rw_timeouts(); return 0; }
-    libc_support(); posix_mutexes(); wall_time(); exit_handlers(); guards(); mutexes(); direct_memory(); write_traps(); memory_primitives();
+    libc_support(); posix_mutexes(); wall_time(); exit_handlers(); guards(); mutexes(); direct_memory(); write_traps(); memory_primitives(); live_streaming();
     rw_lifecycle(); rw_concurrency(); rw_timeouts();
     puts("PASS: callback lifecycle, guard ABI, mutex errors, shared direct memory, memory primitives, resolver scope");
     return 0;
