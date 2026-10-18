@@ -14,7 +14,7 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 10u; // bbport: GS declares only the inputs it reads
+static constexpr u32 ShaderBinaryVersion = 11u; // bbport: loop-free GS output vertex bound
 static constexpr u32 ShaderMetaVersion = 7u; // bbport: ImageResource::needs_native
 static constexpr u32 PipelineKeyVersion = 6u; // bbport: rect/quad TCS reads only VS outputs
 } // namespace Serialization

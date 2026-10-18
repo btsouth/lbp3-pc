@@ -7,6 +7,8 @@
 #include <cstdio>
 
 #include "common/serdes.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/ir/ir_emitter.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 
 namespace {
@@ -42,6 +44,31 @@ std::optional<Shader::Gcn::FetchShaderData> Load(std::initializer_list<std::vect
 } // namespace
 
 int main() {
+    // A GS with four static emissions and a loose hardware bound of 64 needs only four
+    // vertices of output storage. Conditional blocks still provide a conservative bound.
+    Shader::Info info{};
+    Shader::IR::Program program{info};
+    Common::ObjectPool<Shader::IR::Inst> pool;
+    Shader::IR::Block first{pool}, second{pool};
+    for (int i = 0; i < 2; ++i) {
+        first.AppendNewInst(Shader::IR::Opcode::EmitVertex, {});
+        second.AppendNewInst(Shader::IR::Opcode::EmitVertex, {});
+    }
+    using Node = Shader::IR::AbstractSyntaxNode;
+    program.syntax_list.push_back({.data = {.block = &first}, .type = Node::Type::Block});
+    program.syntax_list.push_back({.type = Node::Type::If});
+    program.syntax_list.push_back({.data = {.block = &second}, .type = Node::Type::Block});
+    program.syntax_list.push_back({.type = Node::Type::EndIf});
+    using Shader::Backend::SPIRV::GeometryOutputVertexLimit;
+    assert(GeometryOutputVertexLimit(program, 64) == 4);
+    assert(GeometryOutputVertexLimit(program, 3) == 3);
+    program.syntax_list.push_back({.type = Node::Type::Loop});
+    assert(GeometryOutputVertexLimit(program, 64) == 64);
+    program.syntax_list.back().type = Node::Type::Repeat;
+    assert(GeometryOutputVertexLimit(program, 64) == 64);
+    program.syntax_list.clear();
+    assert(GeometryOutputVertexLimit(program, 64) == 64);
+
     const auto vs = Meta(Shader::SwStage::Vertex, Shader::HwStage::Export, true);
     const auto gs = Meta(Shader::SwStage::Geometry, Shader::HwStage::Geometry, false);
     const auto fs = Meta(Shader::SwStage::Fragment, Shader::HwStage::Fragment, false);
@@ -51,6 +78,6 @@ int main() {
     const auto gs_first = Load({gs, vs});
     assert(gs_first && gs_first->attributes.size() == 1);
     assert(!Load({fs, gs}));
-    std::printf("Shader meta: a VS+GS pipeline from the cache keeps its fetch shader\n");
+    std::printf("Shaders: bounded loop-free GS emissions; cached VS+GS keeps its fetch shader\n");
     return 0;
 }
