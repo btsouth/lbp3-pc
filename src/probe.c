@@ -213,7 +213,10 @@ static void *count_report(void *unused) {
         uint64_t *now = calloc(import_count, sizeof(*now));
         for (uint64_t i = 0; i < import_count; ++i) now[i] = __atomic_load_n(&call_counts[i], __ATOMIC_RELAXED);
         printf("Import calls, last 5 s:");
-        for (int k = 0; k < 12; ++k) {
+        /* BB_COUNT_IMPORTS=N (over 1): the N busiest, else 12. */
+        const char *n_env = getenv("BB_COUNT_IMPORTS");
+        const int top = n_env && atoi(n_env) > 1 ? atoi(n_env) : 12;
+        for (int k = 0; k < top; ++k) {
             uint64_t best = 0, at = 0;
             for (uint64_t i = 0; i < import_count; ++i) {
                 uint64_t d = now[i] - last[i];
@@ -636,7 +639,7 @@ int main(int argc, char **argv) {
     const char *stub_env = getenv("BB_STUB_IMPORTS");
     if (stub_env && !strcmp(stub_env, "1")) stub_seen = calloc(import_count + 1, 1);
     const char *count_env = getenv("BB_COUNT_IMPORTS");
-    if (count_env && !strcmp(count_env, "1")) {
+    if (count_env && atoi(count_env) > 0) {
         call_counts = calloc(import_count + 1, sizeof(*call_counts));
         call_records = calloc(import_count + 1, sizeof(*call_records));
         count_stubs = allocate(round_page((import_count + 1) * COUNT_STUB));
