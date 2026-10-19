@@ -545,6 +545,14 @@ static ABI int32_t mouse_read(int32_t handle,unsigned char *data,int32_t count) 
 }
 static ABI int32_t mouse_close(int32_t handle) { (void)handle; return 0; }
 static ABI int32_t audio_in_open(void) { return AUDIO_IN_NOT_OPENED; }
+/* No microphone: Input fails as Open did, but only after the time a grain takes (256 samples at
+ * 16 kHz). Input blocks for that long on the console; LBP3's AudioIn thread calls it in a loop
+ * whatever it returns, ~100 million times a second when it returned at once. */
+static ABI int32_t audio_in_input(void) {
+    struct timespec grain={0,16000000};
+    nanosleep(&grain,NULL);
+    return AUDIO_IN_NOT_OPENED;
+}
 
 static const RuntimeExport exports[]={
     {"sceUserServiceInitialize",user_initialize}, {"sceUserServiceTerminate",user_terminate},
@@ -649,7 +657,7 @@ static const RuntimeExport exports[]={
     {"sceVoiceConnectIPortToOPort",ok_void}, {"sceVoiceDisconnectIPortFromOPort",ok_void},
     {"sceVoiceStart",ok_void}, {"sceVoiceStop",ok_void}, {"sceVoiceGetPortInfo",voice_info},
     {"sceVoiceReadFromOPort",voice_read}, {"sceVoiceWriteToIPort",voice_write},
-    {"sceAudioInInput",audio_in_open}, {"sceAudioInClose",audio_in_open},
+    {"sceAudioInInput",audio_in_input}, {"sceAudioInClose",audio_in_open},
     {"sceNpMatching2Initialize",ok_void}, {"sceNpMatching2Terminate",ok_void},
     {"sceNpMatching2CreateContext",np_signed_out},
     {"sceNpSignalingInitialize",ok_void}, {"sceNpSignalingTerminate",ok_void},
