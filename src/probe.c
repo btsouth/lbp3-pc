@@ -1,6 +1,7 @@
 /* Minimal x86-64 native loader experiment. Not a PS4 emulator or game port. */
 #define _GNU_SOURCE
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,6 +243,19 @@ __asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
         " mov %rbp,%rsp\n pop %rbp\n ret\n");
 #endif
 static ABI void guest_exit(void) { puts("Runtime: process finalizer callback reached"); }
+#ifndef _WIN32
+/* BB_GAME_LOG=OFFSET (porting): a game's printf-style log function, left empty in its release
+ * build, jumps here instead so the game's own messages reach the log. */
+static ABI int game_log(const char *format, ...) {
+    char text[1024];
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    if (n > 0) printf("Game: %s%s", text, text[strlen(text) - 1] == '\n' ? "" : "\n");
+    return 0;
+}
+#endif
 #ifndef _WIN32
 static void fault(int sig, siginfo_t *info, void *context) {
     /* GPU page tracking (write-protected guest pages) is resolved first. */
@@ -689,6 +703,19 @@ int main(int argc, char **argv) {
         memcpy(image + relocs[i].target, &value, 8);
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
+#ifndef _WIN32
+    const char *game_log_env = getenv("BB_GAME_LOG");
+    if (game_log_env) {
+        uint64_t at = strtoull(game_log_env, NULL, 16);
+        if (at + 13 > size) fail("BB_GAME_LOG is outside the image");
+        uintptr_t target = (uintptr_t)game_log;
+        unsigned char jump[13] = {0x49, 0xbb};                  /* movabs r11, game_log */
+        memcpy(jump + 2, &target, 8);
+        jump[10] = 0x41; jump[11] = 0xff; jump[12] = 0xe3;     /* jmp r11 */
+        memcpy(image + at, jump, sizeof(jump));
+        printf("Runtime: the game's log function at +0x%" PRIx64 " prints to this log\n", at);
+    }
+#endif
     if (!cpu_only) bbgpu_patch_image(image, size);
     protect(traps, round_page((import_count + 1) * 32), 5);
     if (count_stubs) {
