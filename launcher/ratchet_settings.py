@@ -20,6 +20,9 @@ PACKAGED = bool(os.environ.get("BB_PREBUILT"))
 DATA_DIR = Path(os.environ.get("BB_DATA_DIR", PORT_DIR))
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ratchet-port-launcher"
 TITLE = "Ratchet & Clank"
+GAME_DESCRIPTION = "Your own dump of the European release, CUSA01073 version 01.00"
+APP_ID = "io.github.ratchet_port.Launcher"
+LOG_NAME = "ratchet-port"
 
 # (label, value, note): the first entry is the default.
 FPS_MODES = [
@@ -93,7 +96,7 @@ def read_ini(path=None):
     return values, lines
 
 
-def write_ini(changes, path=None):
+def write_ini(changes, path=None, title=TITLE):
     """Sets the keys in changes (None removes one) and keeps the rest of the file as it is."""
     path = Path(path or ini_path())
     _, lines = read_ini(path)
@@ -108,7 +111,7 @@ def write_ini(changes, path=None):
                 continue
         out.append(line)
     if not lines:
-        out.append("# Ratchet & Clank port settings")
+        out.append(f"# {title} port settings")
     out += [f"{key}={value}" for key, value in changes.items() if key not in written and value is not None]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out) + "\n", encoding="utf-8")

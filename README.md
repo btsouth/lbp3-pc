@@ -41,25 +41,38 @@ Do not ask for game files in this project's issues. They will be closed.
 
 ## Build and run
 
-There is no AppImage or launcher for this game yet. You need GCC, CMake, Ninja, Python 3,
-glslang, SDL3, the Vulkan headers and the libraries listed in `shell.nix`. With
-[Nix](https://nixos.org) they all come from `shell.nix`.
+There is no release download yet. You need GCC, CMake, Ninja, Python 3, glslang, SDL3, the Vulkan
+headers and the libraries listed in `shell.nix`. With [Nix](https://nixos.org) they all come from
+`shell.nix`.
 
 ```bash
 git clone --recursive <this repository> lbp3-port && cd lbp3-port
 bash build.sh
+bash launcher/lbp3-launcher.sh      # needs PyGObject, GTK 4 and libadwaita
+```
+
+In the launcher, choose your game folder (a green tick means it found CUSA00063 1.00), then press
+**Play**. `--play` starts the game with the saved settings and no window. Launcher settings live in
+`~/.config/lbp3-port-launcher`.
+
+Or without the launcher:
+
+```bash
 BB_GAME_DIR=/path/to/CUSA00063 bash run.sh
 ```
 
 `run.sh` recognises the game by its title ID and applies what it needs. `BB_USER_NAME=Name` sets
-the name the game shows for your profile.
+the name the game shows for your profile (the launcher's **Player name**).
+
+`BB_PACKAGE_GAME=lbp3 bash packaging/appimage.sh` (after `build.sh`, with Nix) builds
+`dist/LittleBigPlanet3-port-x86_64.AppImage`, which keeps its data in `~/.local/share/lbp3-port`.
 
 ## Known issues
 
-- The first start after installing (or after an update of the port clears the shader cache) can
-  stop at the first level load with a GPU timeout from the game itself: a few hundred shaders
-  compile at once and the game's watchdog gives up. Start it again; the second start uses the
-  cache and gets through.
+- The first start after installing (or after an update of the port clears the shader cache)
+  compiles a few hundred shaders, so the first loads take longer and stutter. Later starts use
+  the cache. Older builds could stop at the first level load with a GPU timeout from the game
+  itself; if that happens, start it again.
 - Only the Prologue up to the start of Needlepoint Peaks has been played, with a scripted
   controller. Later levels, Create mode and saving progress have not been tested.
 - Online play does not work. The game's servers are closed; the port tells the game they are
