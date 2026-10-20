@@ -15,13 +15,14 @@ by deadinside28, and keeps its loader, runtime and renderer.
 dumped from your own PS4. This project is not affiliated with Sony Interactive Entertainment, Media
 Molecule or Sumo Digital.
 
-**Status: early work in progress, not playable yet.** The game boots, shows the brightness
+**Status: early preview, release 0.1.** The game boots, shows the brightness
 calibration screen, reports that its online servers are unreachable, and goes on offline to the
 Pod, the Pod Computer and the Prologue map. The Introduction plays to its end, lit and colored, at
 the game's 30 FPS. The Legend of Bunkum plays its story to the end, and the game goes on by
 itself to Needlepoint Peaks, the first level with gameplay, which can be walked through. Nothing
-later has been reached yet. It has been tested on one desktop (NVIDIA RTX 4070 SUPER) and, for
-correctness only, on an Intel iGPU.
+later has been reached yet. It has been tested on one desktop (NVIDIA RTX 4070 SUPER, Arch Linux)
+and, for correctness only, on an Intel iGPU under Ubuntu 24.04. Reports from other GPUs and
+distributions are very welcome (see [Reporting a problem](#reporting-a-problem)).
 
 ## Requirements
 
@@ -39,21 +40,43 @@ end up with a folder named `CUSA00063` that contains `eboot.bin`.
 
 Do not ask for game files in this project's issues. They will be closed.
 
-## Build and run
+## Install and run
 
-There is no release download yet. You need GCC, CMake, Ninja, Python 3, glslang, SDL3, the Vulkan
-headers and the libraries listed in `shell.nix`. With [Nix](https://nixos.org) they all come from
-`shell.nix`.
+### AppImage (recommended)
+
+1. Download `LittleBigPlanet3-port-x86_64.AppImage` from the
+   [releases page](https://github.com/btsouth/lbp3-pc/releases). The `.sha256` file next to it
+   lets you check the download with `sha256sum -c`.
+2. Make it executable and start it:
+
+   ```bash
+   chmod +x LittleBigPlanet3-port-x86_64.AppImage
+   ./LittleBigPlanet3-port-x86_64.AppImage
+   ```
+
+3. In the launcher, choose your game folder. A green tick means it found CUSA00063 1.00.
+4. Press **Play**. The first start prepares the game image and compiles shaders, so expect a slow
+   first minute.
+
+`./LittleBigPlanet3-port-x86_64.AppImage --play` starts the game with the saved settings and no
+launcher window (handy for Steam as a non-Steam game).
+
+Saves, caches and settings live in `~/.local/share/lbp3-port`. Launcher settings live in
+`~/.config/lbp3-port-launcher`.
+
+The AppImage does not need unprivileged user namespaces (Ubuntu 23.10 and later restrict them)
+or Nix. While it runs it points the link `/tmp/.lbpS` at its own files, so run one copy at a time.
+
+### From source
+
+You need GCC, CMake, Ninja, Python 3, glslang, SDL3, the Vulkan headers and the libraries listed
+in `shell.nix`. With [Nix](https://nixos.org) they all come from `shell.nix`.
 
 ```bash
 git clone --recursive <this repository> lbp3-port && cd lbp3-port
 bash build.sh
 bash launcher/lbp3-launcher.sh      # needs PyGObject, GTK 4 and libadwaita
 ```
-
-In the launcher, choose your game folder (a green tick means it found CUSA00063 1.00), then press
-**Play**. `--play` starts the game with the saved settings and no window. Launcher settings live in
-`~/.config/lbp3-port-launcher`.
 
 Or without the launcher:
 
@@ -64,8 +87,8 @@ BB_GAME_DIR=/path/to/CUSA00063 bash run.sh
 `run.sh` recognises the game by its title ID and applies what it needs. `BB_USER_NAME=Name` sets
 the name the game shows for your profile (the launcher's **Player name**).
 
-`BB_PACKAGE_GAME=lbp3 bash packaging/appimage.sh` (after `build.sh`, with Nix) builds
-`dist/LittleBigPlanet3-port-x86_64.AppImage`, which keeps its data in `~/.local/share/lbp3-port`.
+`BB_PACKAGE_GAME=lbp3 bash packaging/appimage.sh` (after `build.sh`, with Nix) builds the AppImage
+into `dist/`.
 
 ## Known issues
 
@@ -73,6 +96,8 @@ the name the game shows for your profile (the launcher's **Player name**).
   compiles a few hundred shaders, so the first loads take longer and stutter. Later starts use
   the cache. Older builds could stop at the first level load with a GPU timeout from the game
   itself; if that happens, start it again.
+- On a new install, the first visit to a level can run at 15 to 20 FPS for about half a minute
+  while the game fills its cache. It runs at 30 FPS after that.
 - Only the Prologue up to the start of Needlepoint Peaks has been played, with a scripted
   controller. Later levels, Create mode and saving progress have not been tested.
 - Online play does not work. The game's servers are closed; the port tells the game they are
@@ -95,8 +120,14 @@ You don't need to set these. The port sets them for this game, and each one can 
 | `BB_STUB_IMPORTS` | `1` | Missing system functions return 0 instead of stopping the game |
 | `BB_NP_SIGNED_IN` | `1` | Signed in to PSN with the game's servers unreachable |
 | `BB_LOCAL_UDP` | `1` | Local network sockets for the game's networking code |
+| `BB_PC_MODEL` | `0` | The GPU memory model the port was tested with, on every GPU |
 | `BB_SAVE_LOG` | | `1` writes the log to `logs/` in the data folder |
 | `BB_SKIP_GAME_CHECK` | | `1` starts a game folder the check rejects |
+
+## Reporting a problem
+
+Turn on **Save the log to a file** in the launcher, reproduce the problem, and attach the log from
+`~/.local/share/lbp3-port/logs` with your GPU, driver version and distribution.
 
 ## Credits and licenses
 
