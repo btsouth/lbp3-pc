@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <time.h>
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
 #define MAX_FILES 1024
 #define MAX_MOUNTS 16
@@ -426,12 +427,23 @@ static ssize_t read_retrying(int h,void *buffer,uint64_t size,int64_t offset,int
     }
     return n;
 }
+/* BB_READ_TRACE=1: the first 20000 reads with file, offset, size and result (loads that stall). */
+static void read_trace(int fd,uint64_t size,int64_t offset,int64_t n) {
+    static int left=-1;
+    if (left<0) { const char *e=getenv("BB_READ_TRACE"); left=e && e[0]=='1' ? 20000 : 0; }
+    if (left<=0) return;
+    --left;
+    File *f=get(fd); struct timespec now; clock_gettime(CLOCK_MONOTONIC,&now);
+    printf("Read trace: %ld.%01ld fd %d %s %llu @%lld -> %lld\n",(long)now.tv_sec,now.tv_nsec/100000000,fd,
+           f ? f->path : "?",(unsigned long long)size,(long long)offset,(long long)n);
+}
 static int64_t do_read(int fd,void *buffer,uint64_t size) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
     runtime_memory_note_write((uintptr_t)buffer,size);
     touch_for_write(buffer,size);
     ssize_t n=read_retrying(h,buffer,size,0,0);
+    read_trace(fd,size,-1,n<0 ? -errno : n);
     if (n<0) { if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno); return -errno; }
     if (n>0) runtime_memory_note_write((uintptr_t)buffer,(uint64_t)n); /* and once the data is there */
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
@@ -443,6 +455,7 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     runtime_memory_note_write((uintptr_t)buffer,size);
     touch_for_write(buffer,size);
     ssize_t n=read_retrying(h,buffer,size,offset,1);
+    read_trace(fd,size,offset,n<0 ? -errno : n);
     if (n<0) { if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,errno); return -errno; }
     if (n>0) runtime_memory_note_write((uintptr_t)buffer,(uint64_t)n); /* and once the data is there */
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
