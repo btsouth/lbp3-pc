@@ -271,13 +271,14 @@ class RatchetDefaultTests(unittest.TestCase):
         self.assertEqual((env['BB_PC_MODEL'], env['BB_VBLANK_HZ']), ('1', '480'))
 
 
-LBP3_KEYS = ('BB_IMAGE_BASE', 'BB_STUB_IMPORTS', 'BB_NP_SIGNED_IN', 'BB_LOCAL_UDP', 'BB_VBLANK_HZ')
+LBP3_KEYS = ('BB_IMAGE_BASE', 'BB_STUB_IMPORTS', 'BB_NP_SIGNED_IN', 'BB_LOCAL_UDP', 'BB_VBLANK_HZ',
+             'BB_PC_MODEL')
 
 
 class Lbp3DefaultTests(unittest.TestCase):
     """LittleBigPlanet 3 runs with no variables set: run.sh picks its settings by TITLE_ID."""
 
-    def launch(self, title='CUSA00063', **extra):
+    def launch(self, title='CUSA00063', vendor=None, **extra):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
             out = data / 'out'
@@ -292,7 +293,8 @@ class Lbp3DefaultTests(unittest.TestCase):
             config = data / 'bbport.ini'
             config.write_text('')
             caps = data / 'bb-gpu-capabilities'  # next to the probe, as run.sh looks for it
-            caps.write_text('#!/bin/sh\nexit 1\n')
+            caps.write_text('#!/bin/sh\n' + (f'[ "$1" = --device ] && printf "{vendor}\\tTest GPU\\n"\n'
+                                              if vendor else 'exit 1\n'))
             caps.chmod(0o755)
             python = data / 'python'
             python.write_text(f'#!{sys.executable}\n' +
@@ -322,6 +324,12 @@ class Lbp3DefaultTests(unittest.TestCase):
         self.assertEqual({key: env[key] for key in LBP3_KEYS[:4]}, {
             'BB_IMAGE_BASE': '0x80000000', 'BB_STUB_IMPORTS': '1', 'BB_NP_SIGNED_IN': '1',
             'BB_LOCAL_UDP': '1'})
+
+    def test_tested_memory_model_on_every_gpu(self):
+        self.assertEqual(self.launch(vendor='0x1002')['BB_PC_MODEL'], '0')
+        self.assertEqual(self.launch(vendor='0x10de')['BB_PC_MODEL'], '0')
+        self.assertEqual(self.launch(vendor='0x1002', BB_PC_MODEL='1')['BB_PC_MODEL'], '1')
+        self.assertEqual(self.launch(title='CUSA03173', vendor='0x1002')['BB_PC_MODEL'], '1')
 
     def test_explicit_values_win(self):
         env = self.launch(BB_NP_SIGNED_IN='0', BB_IMAGE_BASE='0x800000000')
