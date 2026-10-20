@@ -913,6 +913,7 @@ int main(int argc, char **argv) {
         }
     }
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
+    runtime_thread_attach_main(); /* also without native libc: the PS4's FPU state */
     entered_game=1;
     /* Room for 64 arguments: games add /app0/commandline.txt's arguments into this array in
      * place (Ratchet & Clank, 0xe94790, up to 64), which overran a 2-entry one on our stack. */

@@ -18,10 +18,10 @@ Molecule or Sumo Digital.
 **Status: early work in progress, not playable yet.** The game boots, shows the brightness
 calibration screen, reports that its online servers are unreachable, and goes on offline to the
 Pod, the Pod Computer and the Prologue map. The Introduction plays to its end, lit and colored, at
-the game's 30 FPS. The Legend of Bunkum plays its story up to a white screen near the end (see
-Known issues); skipping it from the pause menu leads into the next level, which can be walked
-through. Nothing later has been reached yet. It has been tested on one desktop (NVIDIA RTX 4070
-SUPER) and, for correctness only, on an Intel iGPU.
+the game's 30 FPS. The Legend of Bunkum plays its story to the end, and the game goes on by
+itself to Needlepoint Peaks, the first level with gameplay, which can be walked through. Nothing
+later has been reached yet. It has been tested on one desktop (NVIDIA RTX 4070 SUPER) and, for
+correctness only, on an Intel iGPU.
 
 ## Requirements
 
@@ -60,12 +60,8 @@ the name the game shows for your profile.
   stop at the first level load with a GPU timeout from the game itself: a few hundred shaders
   compile at once and the game's watchdog gives up. Start it again; the second start uses the
   cache and gets through.
-- The Legend of Bunkum (the second Prologue level, a story-only level) stops on a white screen
-  after the story of the three heroes ("With their grace!"): the camera rests in the clouds and
-  the story does not go on. Press Options to open the pause menu and choose **Skip**; the game
-  moves on to the next level. The cause is still being worked on.
-- Only the Prologue up to the first Bunkum level has been played, with a scripted controller.
-  Later levels, Create mode and saving progress have not been tested.
+- Only the Prologue up to the start of Needlepoint Peaks has been played, with a scripted
+  controller. Later levels, Create mode and saving progress have not been tested.
 - Online play does not work. The game's servers are closed; the port tells the game they are
   unreachable and it goes on offline.
 - Many system functions the game imports are not implemented yet and return 0 (`BB_STUB_IMPORTS`).
