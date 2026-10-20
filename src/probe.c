@@ -325,6 +325,47 @@ static void *cover_windows(void *arg) {
     }
     return NULL;
 }
+/* BB_MEMDUMP=PREFIX (porting) with BB_MEMDUMP_AT=240,300,330 (seconds after start): the image's
+ * writable segments (the game's globals) written to PREFIX.N at each time, to diff state. */
+static unsigned char *memdump_image;
+static Segment *memdump_segments;
+static uint64_t memdump_count;
+static void *memdump_thread(void *arg) {
+    const char *list = arg, *prefix = getenv("BB_MEMDUMP");
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int n = 0; list && *list; ++n) {
+        char *end;
+        double at = strtod(list, &end);
+        list = *end == ',' ? end + 1 : end + strlen(end);
+        cover_sleep_until(at, start);
+        char name[4096];
+        snprintf(name, sizeof(name), "%s.%d", prefix, n);
+        FILE *out = fopen(name, "wb");
+        uint64_t bytes = 0;
+        for (uint64_t i = 0; out && i < memdump_count; ++i) {
+            if (!(memdump_segments[i].flags & 2)) continue;
+            uint64_t header[2] = {memdump_segments[i].address, memdump_segments[i].size};
+            fwrite(header, sizeof(header), 1, out);
+            fwrite(memdump_image + memdump_segments[i].address, 1, memdump_segments[i].size, out);
+            bytes += memdump_segments[i].size;
+        }
+        if (out) fclose(out);
+        printf("Memory dump %d at %.0f s: %llu bytes -> %s\n", n, at, (unsigned long long)bytes, name);
+    }
+    return NULL;
+}
+static void memdump_setup(unsigned char *image, Segment *segments, uint64_t ns) {
+    const char *prefix = getenv("BB_MEMDUMP"), *times = getenv("BB_MEMDUMP_AT");
+    if (!prefix || !times) return;
+    memdump_image = image;
+    memdump_segments = malloc(ns * sizeof(*segments));
+    memcpy(memdump_segments, segments, ns * sizeof(*segments));
+    memdump_count = ns;
+    pthread_t thread;
+    pthread_create(&thread, NULL, memdump_thread, (void *)times);
+    pthread_detach(thread);
+}
 static int cover_compare(const void *a, const void *b) {
     uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
     return x < y ? -1 : x > y;
@@ -847,6 +888,7 @@ int main(int argc, char **argv) {
     if (!executable_entry) fail("entry is not executable");
 #ifndef _WIN32
     cover_setup(image, size, segments, ns);
+    memdump_setup(image, segments, ns);
 #endif
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
     if (native_libc) {
