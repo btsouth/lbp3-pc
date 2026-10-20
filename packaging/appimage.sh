@@ -5,9 +5,14 @@
 # Running it opens the launcher; `--play` starts the game with the launcher's saved settings.
 # Data (generated files, saves, bbport.ini): ~/.local/share/bbport (BB_DATA_DIR).
 # BB_PACKAGE_GAME=ratchet: dist/Ratchet-Clank-port-x86_64.AppImage, the Ratchet & Clank launcher,
-# data in ~/.local/share/ratchet-port.
+# data in ~/.local/share/ratchet-port. BB_PACKAGE_GAME=lbp3: dist/LittleBigPlanet3-port-x86_64.AppImage,
+# data in ~/.local/share/lbp3-port.
 set -euo pipefail
-if [[ ${BB_PACKAGE_GAME:-} == ratchet ]]; then name=Ratchet-Clank-port; else name=Bloodborne-bbport; fi
+case ${BB_PACKAGE_GAME:-} in
+    ratchet) name=Ratchet-Clank-port ;;
+    lbp3) name=LittleBigPlanet3-port ;;
+    *) name=Bloodborne-bbport ;;
+esac
 cd -- "$(dirname -- "$0")/.."
 [[ -f out/bb-probe && -f out/gpu/libbbgpu.so ]] || { echo 'Build first: bash build.sh' >&2; exit 1; }
 root=$PWD

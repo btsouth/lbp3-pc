@@ -13,17 +13,22 @@ let
   # (appimage.sh runs nix with --impure) bundles the local fsr4_411 for one's own devices.
   fsr411 = builtins.getEnv "BB_PACKAGE_FSR411" == "1";
   # BB_PACKAGE_GAME=ratchet: the Ratchet & Clank package (its launcher, its own data directory,
-  # no FSR 4 assets or tools: the game's upscalers are DLSS and FSR 3.1).
-  ratchet = builtins.getEnv "BB_PACKAGE_GAME" == "ratchet";
-  dataName = if ratchet then "ratchet-port" else "bbport";
-  launcherScript = if ratchet then "ratchet_launcher.py" else "bbport_launcher.py";
+  # no FSR 4 assets or tools: the game's upscalers are DLSS and FSR 3.1). BB_PACKAGE_GAME=lbp3:
+  # LittleBigPlanet 3's, the same way (the game keeps its own anti-aliasing).
+  game = builtins.getEnv "BB_PACKAGE_GAME";
+  ratchet = game == "ratchet";
+  lbp3 = game == "lbp3";
+  port = ratchet || lbp3;
+  dataName = if ratchet then "ratchet-port" else if lbp3 then "lbp3-port" else "bbport";
+  launcherScript = if ratchet then "ratchet_launcher.py" else if lbp3 then "lbp3_launcher.py"
+    else "bbport_launcher.py";
   assetDirs = [ "scripts" "patches" "launcher" ]
-    ++ lib.optionals (!ratchet) [ "fsr4_shaders" "tools/fsr4cap" ]
+    ++ lib.optionals (!port) [ "fsr4_shaders" "tools/fsr4cap" ]
     ++ lib.optional fsr411 "fsr4_411";
   # Only what the package needs (the tree also holds builds, profiles and captures).
   wanted = [
     "run.sh" "out" "out/bb-probe" "out/bb-gpu-capabilities" "out/gpu" "out/gpu/libbbgpu.so" "tools"
-  ] ++ lib.optionals ratchet [ "LICENSE" "README.md" ] ++ assetDirs;
+  ] ++ lib.optionals port [ "LICENSE" "README.md" ] ++ assetDirs;
   # DLSS (a build with DLSS_SDK_ROOT): the bridge, NVIDIA's runtime library and its license, as
   # NVIDIA's RTX SDK license allows in an application. Without them the launcher lets the player
   # choose NVIDIA's library (the bridge is still needed).
@@ -163,9 +168,9 @@ pkgs.stdenv.mkDerivation {
     mkdir -p $d/bin $out/bin
     cp run.sh $d/
     cp -r scripts patches launcher $d/
-  '' + lib.optionalString ratchet ''
+  '' + lib.optionalString port ''
     install -m644 LICENSE README.md $d/
-  '' + lib.optionalString (!ratchet) ''
+  '' + lib.optionalString (!port) ''
     cp -r fsr4_shaders $d/
     mkdir -p $d/tools
     cp -r tools/fsr4cap $d/tools/

@@ -4,6 +4,8 @@
 
 Picks the game folder and checks it, sets the frame rate, upscaler, display and controller, then
 starts run.sh and shows its output. --play starts the game with the saved settings, no window.
+lbp3_launcher.py runs the same window with LittleBigPlanet 3's settings (lbp3_settings.py): rows
+for choices a game's settings module leaves empty (FPS_MODES, UPSCALERS) are left out.
 """
 
 import os
@@ -74,8 +76,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         ini, _ = rs.read_ini()
         page = Adw.PreferencesPage()
 
-        game = Adw.PreferencesGroup(title="Game", description=(
-            "Your own dump of the European release, CUSA01073 version 01.00"))
+        game = Adw.PreferencesGroup(title="Game", description=rs.GAME_DESCRIPTION)
         self.game_row = Adw.ActionRow(title="Game folder")
         self.game_status = Gtk.Image()
         self.game_row.add_suffix(self.game_status)
@@ -88,14 +89,22 @@ class LauncherWindow(Adw.ApplicationWindow):
         game.add(self.user_row)
         self.language_row = combo_row("Language", rs.LANGUAGES, s["language"])
         game.add(self.language_row)
+        self.name_row = None
+        if "user_name" in rs.DEFAULTS:
+            self.name_row = Adw.EntryRow(title="Player name")
+            self.name_row.set_text(s["user_name"])
+            game.add(self.name_row)
         page.add(game)
 
         video = Adw.PreferencesGroup(title="Video")
-        self.fps_row = combo_row("Frame rate", rs.FPS_MODES, s["fps_mode"])
-        video.add(self.fps_row)
-        self.upscaler_row = combo_row("Anti-aliasing", rs.UPSCALERS, ini.get("upscaler", ""))
-        self.upscaler_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
-        video.add(self.upscaler_row)
+        self.fps_row = self.upscaler_row = None
+        if rs.FPS_MODES:
+            self.fps_row = combo_row("Frame rate", rs.FPS_MODES, s["fps_mode"])
+            video.add(self.fps_row)
+        if rs.UPSCALERS:
+            self.upscaler_row = combo_row("Anti-aliasing", rs.UPSCALERS, ini.get("upscaler", ""))
+            self.upscaler_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
+            video.add(self.upscaler_row)
         self.show_fps_row = Adw.SwitchRow(title="Show FPS counter", active=ini.get("show_fps") == "1")
         video.add(self.show_fps_row)
         page.add(video)
@@ -153,6 +162,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.display_row.set_selected(values.index(current) if current in values else 0)
 
     def update_upscaler_status(self):
+        if not self.upscaler_row:
+            return
         value = self.upscaler_row.values[self.upscaler_row.get_selected()]
         note = dict((v, n) for _, v, n in rs.UPSCALERS)[value]
         lines = [note] if note else []
@@ -192,7 +203,10 @@ class LauncherWindow(Adw.ApplicationWindow):
     def store(self):
         s = self.settings
         s["language"] = self.language_row.values[self.language_row.get_selected()]
-        s["fps_mode"] = self.fps_row.values[self.fps_row.get_selected()]
+        if self.name_row:
+            s["user_name"] = self.name_row.get_text().strip()
+        if self.fps_row:
+            s["fps_mode"] = self.fps_row.values[self.fps_row.get_selected()]
         s["fullscreen"] = self.fullscreen_row.get_active()
         s["display"] = self.display_row.values[self.display_row.get_selected()]
         s["gamepad"] = self.gamepad_row.values[self.gamepad_row.get_selected()]
@@ -200,9 +214,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         s["save_log"] = self.save_log_row.get_active()
         s["extra_env"] = self.extra_row.get_text().strip()
         rs.save_settings(s)
-        upscaler = self.upscaler_row.values[self.upscaler_row.get_selected()]
-        rs.write_ini({"upscaler": upscaler or None,
-                      "show_fps": "1" if self.show_fps_row.get_active() else "0"})
+        changes = {"show_fps": "1" if self.show_fps_row.get_active() else "0"}
+        if self.upscaler_row:
+            changes["upscaler"] = self.upscaler_row.values[self.upscaler_row.get_selected()] or None
+        rs.write_ini(changes)
 
     # --- log -----------------------------------------------------------------------------
 
@@ -231,7 +246,7 @@ class LauncherWindow(Adw.ApplicationWindow):
     def on_export_log(self, _button):
         text = self.log_text()
         dialog = Gtk.FileDialog(title="Save log")
-        dialog.set_initial_name(f"ratchet-port-{time.strftime('%Y%m%d_%H%M%S')}.log")
+        dialog.set_initial_name(f"{rs.LOG_NAME}-{time.strftime('%Y%m%d_%H%M%S')}.log")
 
         def finish(dialog, result):
             try:
@@ -333,7 +348,7 @@ class LauncherWindow(Adw.ApplicationWindow):
 
 class LauncherApp(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="io.github.ratchet_port.Launcher", flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        super().__init__(application_id=rs.APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
 
     def do_activate(self):
         (self.get_active_window() or LauncherWindow(self)).present()
@@ -344,13 +359,17 @@ def play():
     settings = rs.load_settings()
     level, text = rs.game_status(settings["game_dir"]) if settings["game_dir"] else ("error", "")
     if level == "error":
-        print(f"ratchet-port: choose the game folder in the launcher first. {text}", file=sys.stderr)
+        print(f"{rs.LOG_NAME}: choose the game folder in the launcher first. {text}", file=sys.stderr)
         return 1
     os.chdir(rs.PORT_DIR)
     os.execvpe("bash", ["bash", str(rs.PORT_DIR / "run.sh")], rs.game_environment(settings))
 
 
-if __name__ == "__main__":
+def main():
     if "--play" in sys.argv[1:]:
-        sys.exit(play())
-    sys.exit(LauncherApp().run([arg for arg in sys.argv if arg != "--play"]))
+        return play()
+    return LauncherApp().run([arg for arg in sys.argv if arg != "--play"])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
