@@ -1,6 +1,7 @@
 /* Minimal x86-64 native loader experiment. Not a PS4 emulator or game port. */
 #define _GNU_SOURCE
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -213,7 +214,10 @@ static void *count_report(void *unused) {
         uint64_t *now = calloc(import_count, sizeof(*now));
         for (uint64_t i = 0; i < import_count; ++i) now[i] = __atomic_load_n(&call_counts[i], __ATOMIC_RELAXED);
         printf("Import calls, last 5 s:");
-        for (int k = 0; k < 12; ++k) {
+        /* BB_COUNT_IMPORTS=N (over 1): the N busiest, else 12. */
+        const char *n_env = getenv("BB_COUNT_IMPORTS");
+        const int top = n_env && atoi(n_env) > 1 ? atoi(n_env) : 12;
+        for (int k = 0; k < top; ++k) {
             uint64_t best = 0, at = 0;
             for (uint64_t i = 0; i < import_count; ++i) {
                 uint64_t d = now[i] - last[i];
@@ -239,6 +243,171 @@ __asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
         " mov %rbp,%rsp\n pop %rbp\n ret\n");
 #endif
 static ABI void guest_exit(void) { puts("Runtime: process finalizer callback reached"); }
+#ifndef _WIN32
+/* BB_GAME_LOG=OFFSET (porting): a game's printf-style log function, left empty in its release
+ * build, jumps here instead so the game's own messages reach the log. */
+static ABI int game_log(const char *format, ...) {
+    char text[1024];
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    if (n > 0) printf("Game: %s%s", text, text[strlen(text) - 1] == '\n' ? "" : "\n");
+    return 0;
+}
+/* BB_COVER=FILE (porting): which guest functions run in given time windows. FILE lists function
+ * offsets (hex, one per line). BB_COVER_WINDOWS=100-160,330-390 (seconds after start) puts an
+ * int3 on each function for every window; the first call of each restores it, and at the
+ * window's end the functions reached are written to FILE.out.N, one offset per line. */
+static unsigned char *cover_image;
+static uint32_t *cover_offsets;
+static unsigned char *cover_saved, *cover_hit;
+static size_t cover_count;
+static long cover_find(uintptr_t at) {
+    if (at < (uintptr_t)cover_image) return -1;
+    uint64_t offset = at - (uintptr_t)cover_image;
+    size_t lo = 0, hi = cover_count;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (cover_offsets[mid] < offset) lo = mid + 1; else hi = mid;
+    }
+    return lo < cover_count && cover_offsets[lo] == offset ? (long)lo : -1;
+}
+static void cover_trap(int sig, siginfo_t *info, void *context) {
+    (void)info;
+    ucontext_t *uc = context;
+    uintptr_t at = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP] - 1;
+    long i = cover_find(at);
+    if (i < 0) {
+        static const char text[] = "Coverage: a trap outside the function list\n";
+        { ssize_t written_ = write(2, text, sizeof(text) - 1); (void)written_; }
+        signal(sig, SIG_DFL);
+        return;
+    }
+    /* Another thread may have restored it already: run the original instruction either way. */
+    if (*(volatile unsigned char *)at == 0xcc) *(volatile unsigned char *)at = cover_saved[i];
+    cover_hit[i] = 1;
+    uc->uc_mcontext.gregs[REG_RIP] = (greg_t)at;
+}
+static void cover_sleep_until(double seconds, struct timespec start) {
+    for (;;) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (double)(now.tv_sec - start.tv_sec) + (now.tv_nsec - start.tv_nsec) / 1e9;
+        if (elapsed >= seconds) return;
+        usleep(100000);
+    }
+}
+static void *cover_windows(void *arg) {
+    const char *list = arg, *path = getenv("BB_COVER");
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int n = 0; list && *list; ++n) {
+        char *end;
+        double from = strtod(list, &end), to = *end == '-' ? strtod(end + 1, &end) : from;
+        list = *end == ',' ? end + 1 : end + strlen(end);
+        cover_sleep_until(from, start);
+        memset(cover_hit, 0, cover_count);
+        for (size_t i = 0; i < cover_count; ++i) cover_image[cover_offsets[i]] = 0xcc;
+        printf("Coverage: window %d armed at %.0f s, %zu functions\n", n, from, cover_count);
+        cover_sleep_until(to, start);
+        size_t reached = 0;
+        for (size_t i = 0; i < cover_count; ++i) {
+            if (cover_image[cover_offsets[i]] == 0xcc) cover_image[cover_offsets[i]] = cover_saved[i];
+            reached += cover_hit[i];
+        }
+        char name[4096];
+        snprintf(name, sizeof(name), "%s.out.%d", path, n);
+        FILE *out = fopen(name, "w");
+        for (size_t i = 0; out && i < cover_count; ++i) if (cover_hit[i]) fprintf(out, "%x\n", cover_offsets[i]);
+        if (out) fclose(out);
+        printf("Coverage: window %d (%.0f-%.0f s): %zu functions reached -> %s\n", n, from, to, reached, name);
+    }
+    return NULL;
+}
+/* BB_MEMDUMP=PREFIX (porting) with BB_MEMDUMP_AT=240,300,330 (seconds after start): the image's
+ * writable segments (the game's globals) written to PREFIX.N at each time, to diff state. */
+static unsigned char *memdump_image;
+static Segment *memdump_segments;
+static uint64_t memdump_count;
+static void *memdump_thread(void *arg) {
+    const char *list = arg, *prefix = getenv("BB_MEMDUMP");
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int n = 0; list && *list; ++n) {
+        char *end;
+        double at = strtod(list, &end);
+        list = *end == ',' ? end + 1 : end + strlen(end);
+        cover_sleep_until(at, start);
+        char name[4096];
+        snprintf(name, sizeof(name), "%s.%d", prefix, n);
+        FILE *out = fopen(name, "wb");
+        uint64_t bytes = 0;
+        for (uint64_t i = 0; out && i < memdump_count; ++i) {
+            if (!(memdump_segments[i].flags & 2)) continue;
+            uint64_t header[2] = {memdump_segments[i].address, memdump_segments[i].size};
+            fwrite(header, sizeof(header), 1, out);
+            fwrite(memdump_image + memdump_segments[i].address, 1, memdump_segments[i].size, out);
+            bytes += memdump_segments[i].size;
+        }
+        if (out) fclose(out);
+        printf("Memory dump %d at %.0f s: %llu bytes -> %s\n", n, at, (unsigned long long)bytes, name);
+    }
+    return NULL;
+}
+static void memdump_setup(unsigned char *image, Segment *segments, uint64_t ns) {
+    const char *prefix = getenv("BB_MEMDUMP"), *times = getenv("BB_MEMDUMP_AT");
+    if (!prefix || !times) return;
+    memdump_image = image;
+    memdump_segments = malloc(ns * sizeof(*segments));
+    memcpy(memdump_segments, segments, ns * sizeof(*segments));
+    memdump_count = ns;
+    pthread_t thread;
+    pthread_create(&thread, NULL, memdump_thread, (void *)times);
+    pthread_detach(thread);
+}
+static int cover_compare(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+static void cover_setup(unsigned char *image, uint64_t size, Segment *segments, uint64_t ns) {
+    const char *path = getenv("BB_COVER"), *windows = getenv("BB_COVER_WINDOWS");
+    if (!path || !windows) return;
+    FILE *f = fopen(path, "r");
+    if (!f) fail("cannot open BB_COVER");
+    size_t capacity = 1 << 16;
+    cover_offsets = malloc(capacity * sizeof(*cover_offsets));
+    unsigned value;
+    while (fscanf(f, "%x", &value) == 1) {
+        int executable = 0;
+        for (uint64_t i = 0; i < ns; ++i)
+            if ((segments[i].flags & 1) && value >= segments[i].address && value - segments[i].address < segments[i].size) executable = 1;
+        if (!executable || value >= size) continue;
+        if (cover_count == capacity) cover_offsets = realloc(cover_offsets, (capacity *= 2) * sizeof(*cover_offsets));
+        cover_offsets[cover_count++] = value;
+    }
+    fclose(f);
+    qsort(cover_offsets, cover_count, sizeof(*cover_offsets), cover_compare);
+    size_t unique = 0;
+    for (size_t i = 0; i < cover_count; ++i) if (!unique || cover_offsets[i] != cover_offsets[unique - 1]) cover_offsets[unique++] = cover_offsets[i];
+    cover_count = unique;
+    cover_image = image;
+    cover_saved = malloc(cover_count);
+    cover_hit = calloc(cover_count, 1);
+    for (size_t i = 0; i < cover_count; ++i) cover_saved[i] = image[cover_offsets[i]];
+    /* Code stays writable for the int3s. */
+    for (uint64_t i = 0; i < ns; ++i)
+        if (segments[i].flags & 1) protect(image + segments[i].address, round_page(segments[i].size), (unsigned)segments[i].flags | 2);
+    struct sigaction trap = {0};
+    trap.sa_sigaction = cover_trap; trap.sa_flags = SA_SIGINFO|SA_ONSTACK;
+    sigemptyset(&trap.sa_mask);
+    sigaction(SIGTRAP, &trap, NULL);
+    pthread_t thread;
+    pthread_create(&thread, NULL, cover_windows, (void *)windows);
+    pthread_detach(thread);
+    printf("Coverage: %zu functions from %s, windows %s\n", cover_count, path, windows);
+}
+#endif
 #ifndef _WIN32
 static void fault(int sig, siginfo_t *info, void *context) {
     /* GPU page tracking (write-protected guest pages) is resolved first. */
@@ -636,7 +805,7 @@ int main(int argc, char **argv) {
     const char *stub_env = getenv("BB_STUB_IMPORTS");
     if (stub_env && !strcmp(stub_env, "1")) stub_seen = calloc(import_count + 1, 1);
     const char *count_env = getenv("BB_COUNT_IMPORTS");
-    if (count_env && !strcmp(count_env, "1")) {
+    if (count_env && atoi(count_env) > 0) {
         call_counts = calloc(import_count + 1, sizeof(*call_counts));
         call_records = calloc(import_count + 1, sizeof(*call_records));
         count_stubs = allocate(round_page((import_count + 1) * COUNT_STUB));
@@ -686,6 +855,19 @@ int main(int argc, char **argv) {
         memcpy(image + relocs[i].target, &value, 8);
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
+#ifndef _WIN32
+    const char *game_log_env = getenv("BB_GAME_LOG");
+    if (game_log_env) {
+        uint64_t at = strtoull(game_log_env, NULL, 16);
+        if (at + 13 > size) fail("BB_GAME_LOG is outside the image");
+        uintptr_t target = (uintptr_t)game_log;
+        unsigned char jump[13] = {0x49, 0xbb};                  /* movabs r11, game_log */
+        memcpy(jump + 2, &target, 8);
+        jump[10] = 0x41; jump[11] = 0xff; jump[12] = 0xe3;     /* jmp r11 */
+        memcpy(image + at, jump, sizeof(jump));
+        printf("Runtime: the game's log function at +0x%" PRIx64 " prints to this log\n", at);
+    }
+#endif
     if (!cpu_only) bbgpu_patch_image(image, size);
     protect(traps, round_page((import_count + 1) * 32), 5);
     if (count_stubs) {
@@ -704,6 +886,10 @@ int main(int argc, char **argv) {
             executable_entry = 1;
     }
     if (!executable_entry) fail("entry is not executable");
+#ifndef _WIN32
+    cover_setup(image, size, segments, ns);
+    memdump_setup(image, segments, ns);
+#endif
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
     if (native_libc) {
         for (uint64_t m=0;m<module_count;++m) {

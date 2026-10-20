@@ -14,11 +14,45 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
-typedef struct { uint8_t len,family; uint16_t port; uint32_t addr; uint8_t zero[8]; } Address;
+/* SceNetSockaddrIn; vport is the P2P socket's virtual port (0 for plain UDP). */
+typedef struct { uint8_t len,family; uint16_t port; uint32_t addr; uint16_t vport; uint8_t zero[6]; } Address;
 typedef struct { uint32_t events,pad; uint64_t ident,data; } Event;
 static int64_t failure(void) { *runtime_errno()=runtime_guest_errno(errno); return -1; }
+/* BB_NET_TRACE=1: every 5 s the datagrams sent and received by size, the largest of each, and
+ * each one over 1200 bytes or cut short by the receiver's buffer. */
+static pthread_mutex_t trace_lock=PTHREAD_MUTEX_INITIALIZER;
+static uint32_t sizes[2][5];
+static int64_t largest[2];
+static int tracing(void) {
+    static int enabled=-1;
+    if (enabled<0) { const char *t=getenv("BB_NET_TRACE"); enabled=t && t[0]=='1'; }
+    return enabled;
+}
+static void trace(int sent,int fd,int64_t n,int64_t room) {
+    if (!tracing() || n<0) return;
+    int saved=errno;
+    struct timespec now; clock_gettime(CLOCK_MONOTONIC,&now);
+    static time_t report;
+    pthread_mutex_lock(&trace_lock);
+    ++sizes[sent][n<=16 ? 0 : n<=256 ? 1 : n<=1200 ? 2 : n<=1600 ? 3 : 4];
+    if (n>largest[sent]) largest[sent]=n;
+    if (n>1200 || n>room)
+        printf("Net trace: %ld.%01ld %s fd=%d %lld bytes%s\n",(long)now.tv_sec,now.tv_nsec/100000000,
+               sent ? "sent" : "received",fd,(long long)n,n>room ? " (cut short by the buffer)" : "");
+    if (!report) report=now.tv_sec;
+    if (now.tv_sec-report>=5) {
+        report=now.tv_sec;
+        printf("Net trace: %ld sizes <=16/<=256/<=1200/<=1600/more: sent %u/%u/%u/%u/%u (max %lld), received %u/%u/%u/%u/%u (max %lld)\n",
+               (long)now.tv_sec,sizes[1][0],sizes[1][1],sizes[1][2],sizes[1][3],sizes[1][4],(long long)largest[1],
+               sizes[0][0],sizes[0][1],sizes[0][2],sizes[0][3],sizes[0][4],(long long)largest[0]);
+        memset(sizes,0,sizeof(sizes)); largest[0]=largest[1]=0;
+    }
+    pthread_mutex_unlock(&trace_lock);
+    errno=saved;
+}
 static int host(int fd) {
     int h=runtime_file_host_fd(fd);
     if (h<0) errno=EBADF;
@@ -34,8 +68,29 @@ static int address(const Address *a,uint32_t n,struct sockaddr_in *out) {
     out->sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     return 0;
 }
+/* Every socket is on this host, so a sender's host port names its socket: received addresses
+ * carry the vport that socket was bound with, as a PS4's P2P sockets report it. */
+#define PORTS 16
+static struct { uint16_t port,vport; } vports[PORTS];
+static pthread_mutex_t vport_lock=PTHREAD_MUTEX_INITIALIZER;
+static void remember_vport(int h,uint16_t vport) {
+    struct sockaddr_in s; socklen_t n=sizeof(s);
+    if (getsockname(h,(struct sockaddr*)&s,&n)) return;
+    pthread_mutex_lock(&vport_lock);
+    int at=-1;
+    for (int i=0;i<PORTS;++i) if (vports[i].port==s.sin_port || (at<0 && !vports[i].port)) { at=i; if (vports[i].port==s.sin_port) break; }
+    if (at>=0) { vports[at].port=s.sin_port; vports[at].vport=vport; }
+    pthread_mutex_unlock(&vport_lock);
+}
+static uint16_t vport_of(uint16_t port) {
+    uint16_t v=0;
+    pthread_mutex_lock(&vport_lock);
+    for (int i=0;i<PORTS;++i) if (vports[i].port && vports[i].port==port) { v=vports[i].vport; break; }
+    pthread_mutex_unlock(&vport_lock);
+    return v;
+}
 static void guest_address(const struct sockaddr_in *a,Address *out,uint32_t *n) {
-    Address g={.len=sizeof(g),.family=2,.port=a->sin_port,.addr=a->sin_addr.s_addr};
+    Address g={.len=sizeof(g),.family=2,.port=a->sin_port,.addr=a->sin_addr.s_addr,.vport=vport_of(a->sin_port)};
     uint32_t copy=*n<sizeof(g) ? *n : sizeof(g);
     memcpy(out,&g,copy); *n=sizeof(g);
 }
@@ -58,7 +113,8 @@ static ABI int udp_socket(int af,int type,int protocol) {
 static ABI int udp_bind(int fd,const Address *a,uint32_t n) {
     struct sockaddr_in s; int h=host(fd);
     if (h<0 || address(a,n,&s) || bind(h,(struct sockaddr*)&s,sizeof(s))) return (int)failure();
-    printf("Runtime: local UDP bind fd=%d port=%u\n",fd,ntohs(s.sin_port));
+    remember_vport(h,a->vport);
+    printf("Runtime: local UDP bind fd=%d port=%u vport=%u\n",fd,ntohs(s.sin_port),ntohs(a->vport));
     return 0;
 }
 static ABI int udp_connect(int fd,const Address *a,uint32_t n) {
@@ -70,6 +126,10 @@ static ABI int64_t udp_sendto(int fd,const void *b,size_t n,int f,const Address 
     int h=host(fd); struct sockaddr_in s;
     if (h<0 || (a && address(a,len,&s))) return failure();
     ssize_t r=sendto(h,b,n,flags(f),a ? (struct sockaddr*)&s : NULL,a ? sizeof(s) : 0);
+    static int shown;
+    if (a && tracing() && !__atomic_exchange_n(&shown,1,__ATOMIC_RELAXED))
+        printf("Net trace: first send fd=%d to port %u vport %u\n",fd,ntohs(a->port),ntohs(a->vport));
+    trace(1,fd,r,INT64_MAX);
     return r<0 ? failure() : r;
 }
 static ABI int64_t udp_send(int fd,const void *b,size_t n,int f) { return udp_sendto(fd,b,n,f,NULL,0); }
@@ -77,9 +137,11 @@ static ABI int64_t udp_recvfrom(int fd,void *b,size_t n,int f,Address *a,uint32_
     int h=host(fd); struct sockaddr_in s; socklen_t slen=sizeof(s);
     if (h<0) return failure();
     if (a && !len) { errno=EINVAL; return failure(); }
-    ssize_t r=recvfrom(h,b,n,flags(f),a ? (struct sockaddr*)&s : NULL,a ? &slen : NULL);
+    ssize_t r=recvfrom(h,b,n,flags(f)|(tracing() ? MSG_TRUNC : 0),a ? (struct sockaddr*)&s : NULL,a ? &slen : NULL);
     if (r<0) return failure();
     if (a) guest_address(&s,a,len);
+    trace(0,fd,r,(int64_t)n);
+    if (r>(ssize_t)n) r=(ssize_t)n; /* MSG_TRUNC reports the datagram's length */
     return r;
 }
 static ABI int64_t udp_recv(int fd,void *b,size_t n,int f) { return udp_recvfrom(fd,b,n,f,NULL,NULL); }

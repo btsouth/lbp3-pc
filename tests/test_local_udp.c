@@ -18,12 +18,15 @@ static int64_t micros(void) {
 int main(void) {
     unsetenv("BB_LOCAL_UDP"); assert(!runtime_udp_resolve("socket"));
     setenv("BB_LOCAL_UDP","1",1); assert(runtime_udp_resolve("socket"));
-    int receiver=udp_socket(2,6,0), sender=udp_socket(2,2,0);
+    int receiver=udp_socket(2,6,0), sender=udp_socket(2,6,0);
     assert(receiver>=0 && sender>=0);
-    Address a={.len=16,.family=2,.addr=htonl(INADDR_LOOPBACK)};
+    Address a={.len=16,.family=2,.addr=htonl(INADDR_LOOPBACK),.vport=htons(3658)};
     assert(!udp_bind(receiver,&a,sizeof(a)));
+    Address from={.len=16,.family=2,.addr=htonl(INADDR_LOOPBACK),.vport=htons(77)};
+    assert(!udp_bind(sender,&from,sizeof(from)));
+    a.vport=0;
     uint32_t len=sizeof(a); assert(!udp_name(receiver,&a,&len));
-    assert(len==16 && a.family==2 && a.port);
+    assert(len==16 && a.family==2 && a.port && a.vport==htons(3658));
     int one=1; assert(!udp_option(receiver,0xffff,0x1200,&one,sizeof(one)));
     char bytes[32]; assert(udp_recv(receiver,bytes,sizeof(bytes),0)==-1 && error_value==35);
     int ep=ep_create("test",0); assert(ep>0);
@@ -35,6 +38,7 @@ int main(void) {
     Address peer={0}; len=sizeof(peer);
     assert(udp_recvfrom(receiver,bytes,sizeof(bytes),0,&peer,&len)==7);
     assert(!memcmp(bytes,"profile",7) && peer.family==2 && peer.port);
+    assert(peer.vport==htons(77)); /* the sender's vport, as a PS4 P2P socket reports it */
     assert(!ep_control(ep,3,receiver,NULL));
     int64_t start=micros(); assert(ep_wait(ep,&got,1,20000)==0);
     assert(micros()-start>=19000);
