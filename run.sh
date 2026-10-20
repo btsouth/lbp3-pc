@@ -88,11 +88,13 @@ ratchet=0 lbp3=0
 # - BB_IMAGE_BASE: the executable below 4 GiB, as the SPU job code keeps its globals in 32 bits;
 # - BB_STUB_IMPORTS: system functions the runtime lacks return 0 instead of stopping the game;
 # - BB_NP_SIGNED_IN, BB_LOCAL_UDP: signed in to PSN with the game's servers unreachable (as on a
-#   PS4 since they closed), so the online check fails and the game goes on offline.
+#   PS4 since they closed), so the online check fails and the game goes on offline;
+# - BB_PC_MODEL=0: the memory model it was tested with, on every GPU (AMD would get the new one).
 if (( lbp3 )); then
     export BB_IMAGE_BASE=${BB_IMAGE_BASE:-0x80000000}
     export BB_STUB_IMPORTS=${BB_STUB_IMPORTS:-1}
     export BB_NP_SIGNED_IN=${BB_NP_SIGNED_IN:-1} BB_LOCAL_UDP=${BB_LOCAL_UDP:-1}
+    export BB_PC_MODEL=${BB_PC_MODEL:-0}
 fi
 # Sizes chosen below for the previous launch are recomputed after an in-game restart.
 if [[ ${BB_AUTO_RENDER_RES:-} == 1 ]]; then
