@@ -15,13 +15,14 @@ by deadinside28, and keeps its loader, runtime and renderer.
 dumped from your own PS4. This project is not affiliated with Sony Interactive Entertainment, Media
 Molecule or Sumo Digital.
 
-**Status: early test build.** The game boots, shows the brightness
+**Status: early preview, release 0.1.** The game boots, shows the brightness
 calibration screen, reports that its online servers are unreachable, and goes on offline to the
 Pod, the Pod Computer and the Prologue map. The Introduction plays to its end, lit and colored, at
 the game's 30 FPS. The Legend of Bunkum plays its story to the end, and the game goes on by
 itself to Needlepoint Peaks, the first level with gameplay, which can be walked through. Nothing
-later has been reached yet. It has been tested on one desktop (NVIDIA RTX 4070 SUPER) and, for
-correctness only, on an Intel iGPU.
+later has been reached yet. It has been tested on one desktop (NVIDIA RTX 4070 SUPER, Arch Linux)
+and, for correctness only, on an Intel iGPU under Ubuntu 24.04. Reports from other GPUs and
+distributions are very welcome (see [Reporting a problem](#reporting-a-problem)).
 
 ## Requirements
 
@@ -63,7 +64,8 @@ launcher window (handy for Steam as a non-Steam game).
 Saves, caches and settings live in `~/.local/share/lbp3-port`. Launcher settings live in
 `~/.config/lbp3-port-launcher`.
 
-The AppImage needs unprivileged user namespaces, which most desktop distributions have on.
+The AppImage does not need unprivileged user namespaces (Ubuntu 23.10 and later restrict them)
+or Nix. While it runs it points the link `/tmp/.lbpS` at its own files, so run one copy at a time.
 
 ### From source
 
@@ -118,8 +120,14 @@ You don't need to set these. The port sets them for this game, and each one can 
 | `BB_STUB_IMPORTS` | `1` | Missing system functions return 0 instead of stopping the game |
 | `BB_NP_SIGNED_IN` | `1` | Signed in to PSN with the game's servers unreachable |
 | `BB_LOCAL_UDP` | `1` | Local network sockets for the game's networking code |
+| `BB_PC_MODEL` | `0` | The GPU memory model the port was tested with, on every GPU |
 | `BB_SAVE_LOG` | | `1` writes the log to `logs/` in the data folder |
 | `BB_SKIP_GAME_CHECK` | | `1` starts a game folder the check rejects |
+
+## Reporting a problem
+
+Turn on **Save the log to a file** in the launcher, reproduce the problem, and attach the log from
+`~/.local/share/lbp3-port/logs` with your GPU, driver version and distribution.
 
 ## Credits and licenses
 
