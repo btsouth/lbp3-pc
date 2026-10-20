@@ -7,6 +7,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <xmmintrin.h>
+
+/* Guest threads start with the PS4's floating-point state, as fibers do (runtime_fiber.c): MXCSR
+ * 0x9fc0 (denormals are zero, flush to zero, exceptions masked) and x87 control word 0x037f.
+ * Linux's 0x1f80 keeps denormals, and LittleBigPlanet 3's physics turns resting bodies' tiny
+ * velocities into NaN with them; the game then deletes those bodies (and the cutscene cameras
+ * joined to them), which ends The Legend of Bunkum on a white screen. */
+static void fpu_defaults(void) {
+    const uint16_t cw=0x037f;
+    __asm__ volatile("fldcw %0" : : "m"(cw));
+    _mm_setcsr(0x9fc0);
+}
 #ifndef _WIN32
 #include <pthread.h>
 #include <sched.h>
@@ -107,6 +119,7 @@ void runtime_thread_attach_host(const char *name) {
 void runtime_thread_attach_main(void) {
     GuestThread *t=runtime_thread_current();
     snprintf(t->name,sizeof(t->name),"main");
+    fpu_defaults();
 }
 static GuestThread *find_thread(void *handle) {
     GuestThread *found=NULL;
@@ -236,6 +249,7 @@ static void *host_start(void *p) {
     runtime_thread_alt_stack();
     attach(t);
     set_host_name(t->name);
+    fpu_defaults();
     if (!setjmp(t->exit_jump)) t->result=t->entry(t->argument);
     runtime_thread_keys_cleanup();
     pthread_mutex_lock(&lock); t->finished=1; ++exited; pthread_mutex_unlock(&lock);
@@ -405,7 +419,7 @@ void runtime_thread_report(void) {
 #else
 uintptr_t runtime_thread_resolve(const char *name) { (void)name; return 0; }
 void runtime_thread_report(void) {}
-void runtime_thread_attach_main(void) {}
+void runtime_thread_attach_main(void) { fpu_defaults(); }
 void runtime_thread_alt_stack(void) {}
 void runtime_set_main_tls(const void *d,uint64_t f,uint64_t m,uint64_t a) { (void)d;(void)f;(void)m;(void)a; }
 #endif
